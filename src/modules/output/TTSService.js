@@ -7,7 +7,7 @@ class TTSService {
         this.voiceId = 'Chinese (Mandarin)_Gentle_Senior'; 
     }
 
-    async speakStream(text, onAudioChunk) {
+    async speakStream(text, onAudioChunk, signal) {
         if (!text) return;
 
         const payload = {
@@ -35,7 +35,8 @@ class TTSService {
                     'Authorization': `Bearer ${this.apiKey}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: signal // Support cancellation
             });
 
             if (!response.ok) {
@@ -97,7 +98,11 @@ class TTSService {
             }
             console.log('TTS Stream finished');
         } catch (error) {
-            console.error('TTS Request Failed:', error);
+            if (error.name === 'AbortError') {
+                console.log('TTS Request Aborted');
+            } else {
+                console.error('TTS Request Failed:', error);
+            }
         }
     }
 }

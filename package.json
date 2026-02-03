@@ -1,7 +1,7 @@
 {
   "name": "live2d",
   "version": "1.0.0",
-  "main": "src/main.js",
+  "main": "src/core/main.js",
   "scripts": {
     "start": "chcp 65001 && electron .",
     "test": "echo \"Error: no test specified\" && exit 1"

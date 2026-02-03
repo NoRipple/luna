@@ -2,11 +2,60 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const path = require('path');
 const http = require('http');
 const url = require('url');
-const llmService = require('./services/LLMService');
-const ttsService = require('./services/TTSService');
-const screenWatcher = require('./services/ScreenWatcher');
+
+// Modules
+const llmService = require('../modules/thinking/LLMService');
+const ttsService = require('../modules/output/TTSService');
+const screenSensor = require('../modules/perception/ScreenSensor');
+const visionService = require('../modules/recognition/VisionService');
+const memoryService = require('../modules/memory/MemoryService');
 
 let mainWindow;
+
+let ttsController = null;
+
+// --- Module Wiring (Perception -> Recognition -> Thinking -> Output) ---
+screenSensor.on('capture', async (base64Image) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    
+    console.log('Main: Screen captured, starting pipeline...');
+    try {
+        // 1. Vision (Recognition)
+        const analysis = await visionService.analyzeScreen(base64Image);
+        console.log('Main: Vision analysis complete.');
+
+        // 2. Thinking (LLM)
+        const response = await llmService.chatWithCompanion(analysis);
+        console.log('Main: Companion thought complete.', response);
+
+        // 3. Output (Renderer + TTS)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('companion-message', response);
+            
+            if (response.text) {
+                // Cancel previous TTS if any
+                if (ttsController) {
+                    ttsController.abort();
+                }
+                ttsController = new AbortController();
+                
+                ttsService.speakStream(response.text, (chunk) => {
+                     if (mainWindow && !mainWindow.isDestroyed()) {
+                         mainWindow.webContents.send('tts-chunk', chunk);
+                     }
+                }, ttsController.signal).catch(err => {
+                    if (err.name === 'AbortError') {
+                        console.log('Main: TTS aborted (auto flow).');
+                    } else {
+                        console.error('Main: TTS error:', err);
+                    }
+                });
+            }
+        }
+    } catch (err) {
+        console.error('Main: Pipeline error:', err);
+    }
+});
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -19,21 +68,23 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js') // Since preload is also in src
+            preload: path.join(__dirname, 'preload.js')
         }
     });
 
-    mainWindow.loadFile(path.join(__dirname, 'index.html')); // index.html is in src
+    // Updated path to renderer
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
     
-    // Start Screen Watcher
-    screenWatcher.setMainWindow(mainWindow);
-    screenWatcher.start();
+    // Start Screen Sensor if not already started
+    screenSensor.start();
 
     // 打开开发者工具 (调试用，发布时可注释)
     // mainWindow.webContents.openDevTools({ mode: 'detach' });
 
     mainWindow.on('closed', function () {
         mainWindow = null;
+        // Optionally stop sensor when window closes
+        // screenSensor.stop(); 
     });
 }
 
@@ -63,48 +114,60 @@ ipcMain.on('window-drag', (event, pos) => {
 });
 
 ipcMain.on('window-resize', (event, factor) => {
-        if (!mainWindow) return;
-        const bounds = mainWindow.getBounds();
-        const newWidth = Math.round(bounds.width * factor);
-        const newHeight = Math.round(bounds.height * factor);
-        
-        // 最小尺寸限制
-        if (newWidth < 100 || newHeight < 100) return;
-        
-        mainWindow.setSize(newWidth, newHeight);
-    });
+    if (!mainWindow) return;
+    const bounds = mainWindow.getBounds();
+    const newWidth = Math.round(bounds.width * factor);
+    const newHeight = Math.round(bounds.height * factor);
+    
+    // 最小尺寸限制
+    if (newWidth < 100 || newHeight < 100) return;
+    
+    mainWindow.setSize(newWidth, newHeight);
+});
 
-    ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
-        const win = BrowserWindow.fromWebContents(event.sender);
-        win.setIgnoreMouseEvents(ignore, options);
-    });
+ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    win.setIgnoreMouseEvents(ignore, options);
+});
 
-    // LLM IPC Handlers
-    ipcMain.handle('llm-text', async (event, prompt) => {
-        return await llmService.chatWithText(prompt, (chunk) => {
-            if (mainWindow) {
-                mainWindow.webContents.send('llm-chunk', chunk);
-            }
-        });
+// LLM IPC Handlers (Direct interactions)
+ipcMain.handle('llm-text', async (event, prompt) => {
+    return await llmService.chatWithText(prompt, (chunk) => {
+        if (mainWindow) {
+            mainWindow.webContents.send('llm-chunk', chunk);
+        }
     });
+});
 
-    ipcMain.handle('llm-image', async (event, imageUrl, prompt) => {
-        return await llmService.chatWithImage(imageUrl, prompt, (chunk) => {
-            if (mainWindow) {
-                mainWindow.webContents.send('llm-chunk', chunk);
-            }
-        });
+ipcMain.handle('llm-image', async (event, imageUrl, prompt) => {
+    return await llmService.chatWithImage(imageUrl, prompt, (chunk) => {
+        if (mainWindow) {
+            mainWindow.webContents.send('llm-chunk', chunk);
+        }
     });
+});
 
-    ipcMain.handle('tts-speak', async (event, text) => {
-        return await ttsService.speakStream(text, (chunk) => {
-            if (mainWindow) {
-                mainWindow.webContents.send('tts-chunk', chunk);
-            }
-        });
+ipcMain.handle('tts-speak', async (event, text) => {
+    // Cancel previous TTS if any
+    if (ttsController) {
+        ttsController.abort();
+    }
+    ttsController = new AbortController();
+
+    return await ttsService.speakStream(text, (chunk) => {
+        if (mainWindow) {
+            mainWindow.webContents.send('tts-chunk', chunk);
+        }
+    }, ttsController.signal).catch(err => {
+        if (err.name === 'AbortError') {
+            console.log('Main: TTS aborted (manual).');
+        } else {
+            console.error('Main: TTS error:', err);
+        }
     });
+});
 
-    app.on('ready', () => {
+app.on('ready', () => {
     createWindow();
     startApiServer();
 });

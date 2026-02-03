@@ -1,82 +1,84 @@
-# Live2D Desktop Pet (Murasame)
+# Luna - Desktop AI Companion
 
-这是一个基于 Electron 和 PixiJS 的 Live2D 桌面宠物应用。它可以在你的桌面上展示一个可爱的 Live2D 模型（丛雨），并支持鼠标交互、拖拽移动、缩放以及通过 HTTP 接口进行控制。
+Luna 是一个基于 Electron + Live2D 的智能桌面伴侣。她不仅是一个可爱的桌面摆件，更是一位能够"看见"你屏幕、"理解"你行为并与你进行语音交流的知性温柔少女。
 
-## 目录结构
+## ✨ 核心特性
+
+*   **知性温柔的陪伴**: 设定为知性温柔的少女，使用"你"来称呼用户，能够进行自然流畅的中文对话。
+*   **全透明交互窗口**:
+    *   模型背景全透明，无缝融入桌面。
+    *   支持鼠标拖拽移动位置，滚轮缩放大小。
+    *   智能鼠标穿透：仅在模型区域响应点击，不影响后方窗口操作。
+*   **智能感知 (Perception)**:
+    *   每 **1分钟** 自动捕获屏幕内容。
+    *   分析用户当前的屏幕活动（工作、游戏、浏览等）。
+*   **多模态思考 (Thinking)**:
+    *   集成 **DashScope (通义千问)** 大模型，具备多模态（文本+视觉）理解能力。
+    *   根据屏幕内容主动发起对话，或响应用户的交流。
+*   **生动表达 (Output)**:
+    *   **流式语音**: 集成 **MiniMax TTS**，提供自然逼真的语音回复。
+    *   **Live2D 动作**: 根据对话内容自动触发相应的动作和表情。
+    *   **气泡交互**: 头部显示文字气泡，辅助展示对话内容。
+
+## 🏗️ 项目架构
+
+项目采用模块化架构设计，模拟人类的认知流程：
 
 ```
-Live2d/
-├── assets/              # 资源文件
-│   └── Murasame/        # Live2D 模型文件 (原"丛雨 Live2d")
-├── src/                 # 源代码
-│   ├── main.js          # Electron 主进程
-│   ├── preload.js       # 预加载脚本 (API 暴露)
-│   └── index.html       # 渲染进程 (UI 和模型逻辑)
-├── package.json         # 项目配置
-└── README.md            # 说明文档
+src/
+├── core/               # 核心系统
+│   ├── main.js         # 主进程 (窗口管理、IPC枢纽、流程编排)
+│   └── preload.js      # 预加载脚本 (安全接口暴露)
+├── modules/            # 认知模块
+│   ├── perception/     # 感知模块 (屏幕捕获)
+│   │   └── ScreenSensor.js
+│   ├── recognition/    # 识别模块 (视觉分析)
+│   │   └── VisionService.js
+│   ├── thinking/       # 思考模块 (LLM交互)
+│   │   └── LLMService.js
+│   ├── memory/         # 记忆模块 (状态存储)
+│   │   └── MemoryService.js
+│   └── output/         # 表达模块 (TTS语音)
+│       └── TTSService.js
+└── renderer/           # 渲染层 (Live2D展示)
+    └── index.html
 ```
 
-## 功能特性
+## 🚀 快速开始
 
-- **透明背景**: 模型直接显示在桌面上，无矩形边框。
-- **鼠标穿透**: 
-  - 鼠标在模型背景区域时，可穿透操作后方窗口。
-  - 鼠标移入模型时，自动捕获鼠标进行交互。
-- **交互控制**:
-  - **拖拽**: 按住鼠标左键拖拽模型。
-  - **缩放**: 使用鼠标滚轮调整模型大小。
-  - **点击**: 点击模型触发动作（如 Tap）。
-- **外部控制**: 内置 HTTP 服务器 (默认端口 3001)，可通过 API 控制模型动作。
+### 1. 安装依赖
 
-## 安装与运行
+```bash
+npm install
+```
 
-1. **安装依赖**
-   ```bash
-   npm install
-   ```
+### 2. 配置 API Key
 
-2. **启动应用**
-   ```bash
-   npm start
-   # 或者
-   npx electron .
-   ```
+目前 API Key 配置在以下文件中，请根据需要替换为你自己的 Key：
 
-## HTTP API 控制
+*   **LLM (DashScope)**: `src/modules/thinking/LLMService.js`
+*   **TTS (MiniMax)**: `src/modules/output/TTSService.js`
 
-应用启动后会监听 3001 端口。
+### 3. 启动应用
 
-### 触发动作
-- **URL**: `http://localhost:3001/action?name={动作组名}`
-- **示例**:
-  - `http://localhost:3001/action?name=Tap` (点击动作)
-  - `http://localhost:3001/action?name=Idle` (待机动作)
+```bash
+npm start
+```
 
-### 设置表情
-- **URL**: `http://localhost:3001/expression?name={表情名}`
-- **示例**:
-  - `http://localhost:3001/expression?name=exp1`
+## 🛠️ 技术栈
 
-### 设置参数
-- **URL**: `http://localhost:3001/parameter?id={参数ID}&value={数值}`
-- **示例**:
-  - `http://localhost:3001/parameter?id=ParamCheek&value=1` (红晕)
+*   **Runtime**: [Electron](https://www.electronjs.org/)
+*   **Rendering**: [PixiJS v5](https://pixijs.com/) + [Cubism 4 SDK](https://live2d.github.io/)
+*   **AI/LLM**: DashScope (OpenAI Compatible Interface)
+*   **TTS**: MiniMax API
+*   **Tools**: ffmpeg-static (屏幕捕获)
 
-### LLM 对话 (新)
+## 📝 开发说明
 
-- **文本对话**:
-  - **URL**: `http://localhost:3001/chat?prompt={你的问题}`
-  - **示例**: `http://localhost:3001/chat?prompt=你是谁`
-  - **返回**: JSON 格式的回复内容
+*   **模型资源**: Live2D 模型文件位于 `assets/Murasame` 目录。
+*   **调试**: 可以在 `src/core/main.js` 中取消注释 `mainWindow.webContents.openDevTools()` 以开启开发者工具。
+*   **语音去重**: 系统内置了 TTS 中断机制，新的对话会自动打断旧的语音播放，防止声音重叠。
 
-## 开发说明
+## 🤝 贡献
 
-- **主进程 (`src/main.js`)**: 负责窗口创建、透明设置、IPC 事件处理（拖拽/缩放/穿透）以及 HTTP 服务器。
-- **预加载 (`src/preload.js`)**: 使用 `contextBridge` 安全地暴露 Electron API 给渲染进程。
-- **渲染进程 (`src/index.html`)**: 使用 `pixi-live2d-display` 加载模型，处理鼠标事件并调用 Electron API。
-
-## 依赖库
-
-- [electron](https://www.electronjs.org/)
-- [pixi.js](https://pixijs.com/) (v6.x)
-- [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) (Cubism 4 支持)
+欢迎提交 Issue 和 Pull Request 来改进 Luna！
