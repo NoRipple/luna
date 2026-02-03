@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D Murasame Demo</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: transparent;
+            font-family: sans-serif;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        /* Chat Bubble Style */
+        #chat-bubble {
+            position: absolute;
+            width: 200px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 15px;
+            padding: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 14px;
+            color: #333;
+            display: none;
+            z-index: 1000;
+            animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            pointer-events: none;
+        }
+        #chat-bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 20px;
+            border-width: 10px;
+            border-style: solid;
+            border-color: rgba(255, 255, 255, 0.9) transparent transparent transparent;
+        }
+        @keyframes popIn {
+            from { transform: scale(0.5); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+
+        #error-log {
+            position: absolute;
+            top: 0;
+            left: 0;
+            color: red;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            display: none;
+            z-index: 1000;
+        }
+    </style>
+    <!-- Cubism Core -->
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    
+    <!-- PixiJS v5 (Stable for Live2D) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/5.3.10/pixi.min.js"></script>
+    
+    <!-- pixi-live2d-display (Cubism 4 build) -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display/dist/cubism4.min.js"></script>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    
+    <div id="chat-bubble"></div>
+
+    <div id="error-log"></div>
+
+    <script>
+        function logError(msg) {
+            console.error(msg);
+            const el = document.getElementById('error-log');
+            el.style.display = 'block';
+            el.innerHTML += msg + '<br>';
+        }
+
+        window.onload = async () => {
+            try {
+                if (!window.Live2DCubismCore) {
+                    logError('Live2DCubismCore not loaded!');
+                }
+                if (!window.PIXI) {
+                    logError('PIXI not loaded!');
+                }
+                
+                // Expose PIXI to window if not already (Pixi v6 usually does)
+                window.PIXI = window.PIXI || PIXI;
+
+                // Check if pixi-live2d-display loaded
+                if (!PIXI.live2d) {
+                    logError('PIXI.live2d not found. Library might not be loaded.');
+                    return;
+                }
+                
+                console.log('PIXI.live2d keys:', Object.keys(PIXI.live2d));
+                if (window.Live2DModel) console.log('window.Live2DModel exists');
+
+                const Live2DModel = PIXI.live2d.Live2DModel || window.Live2DModel;
+                if (!Live2DModel) {
+                    logError('Live2DModel class not found in PIXI.live2d or window!');
+                    logError('PIXI.live2d keys: ' + Object.keys(PIXI.live2d).join(', '));
+                    return;
+                }
+
+                console.log('Libraries loaded successfully.');
+
+                const app = new PIXI.Application({
+                    view: document.getElementById('canvas'),
+                    autoStart: true,
+                    resizeTo: window,
+                    transparent: true,
+                    backgroundAlpha: 0
+                });
+
+                // Path to your model
+                // 注意：因为 index.html 现在在 src 目录，而模型在 assets 目录
+                // 相对路径应该是 ../assets/Murasame/Murasame.model3.json
+                const modelPath = '../assets/Murasame/Murasame.model3.json';
+                
+                console.log('Loading model from:', modelPath);
+
+                const model = await Live2DModel.from(modelPath);
+
+                app.stage.addChild(model);
+
+                // Auto scale and center
+                const scaleX = (innerWidth * 0.5) / model.width;
+                const scaleY = (innerHeight * 0.8) / model.height;
+                const scale = Math.min(scaleX, scaleY);
+                
+                model.scale.set(scale);
+                model.x = (innerWidth - model.width) / 2;
+                model.y = (innerHeight - model.height) / 2;
+                
+                // 初始状态下，让鼠标穿透，但允许 forward (这样才能检测到 pointerover)
+                window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+
+                model.interactive = true;
+                
+                let isMouseOver = false;
+
+                // 鼠标移入模型：捕获鼠标
+                model.on('pointerover', () => {
+                    isMouseOver = true;
+                    if (!window.isDragging) {
+                        window.electronAPI.setIgnoreMouseEvents(false);
+                    }
+                });
+
+                // 鼠标移出模型：恢复穿透
+                model.on('pointerout', () => {
+                    isMouseOver = false;
+                    if (!window.isDragging) {
+                        window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+                    }
+                });
+
+                // 监听拖拽结束事件，确保拖拽结束后如果鼠标不在模型上，恢复穿透
+                document.addEventListener('drag-end', () => {
+                    if (!isMouseOver) {
+                        window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+                    }
+                });
+
+                // 处理拖拽
+                model.on('pointerdown', (e) => {
+                    if (e.data.button === 0) { // 左键
+                         // 逻辑在 window mousedown 中处理
+                    }
+                });
+                
+                // Handle companion messages
+                window.electronAPI.onCompanionMessage((msg) => {
+                    console.log('Received companion message:', msg);
+                    
+                    // Reset Audio for new message
+                    if (msg.text) {
+                        resetMediaSource();
+                    }
+                    
+                    // 1. Show Text in Bubble
+                    if (msg.text) {
+                        const bubble = document.getElementById('chat-bubble');
+                        bubble.textContent = msg.text;
+                        bubble.style.display = 'block';
+                        
+                        // Update Bubble Position based on Model Position
+                        if (model) {
+                            // Calculate model bounds
+                            const bounds = model.getBounds();
+                            
+                            // Position bubble above the head
+                            // model.x/y is usually top-left or center depending on anchor. 
+                            // Live2DModel usually has anchor at 0,0 (top-left) by default but we set x,y to center it?
+                            // Wait, we set model.x = ... to center it in screen.
+                            
+                            // Let's use getBounds() which is safer.
+                            // bounds.x, bounds.y, bounds.width, bounds.height
+                            
+                            // Center horizontally relative to model
+                            let left = bounds.x + bounds.width / 2 - 100; // 100 is half of bubble width (200/2)
+                            
+                            // Position above the head
+                            let top = bounds.y - 60; // 60px above model top
+                            
+                            // Ensure within screen
+                            if (left < 10) left = 10;
+                            if (left + 220 > window.innerWidth) left = window.innerWidth - 220;
+                            if (top < 10) top = 10; // If too high, maybe put it lower? 
+                            // If model is very high, bubble might be cut off.
+                            // Let's just try to put it at bounds.y + some offset if it's too high?
+                            // Or put it inside the model area if top is negative.
+                            if (top < 0) top = 20;
+
+                            bubble.style.left = left + 'px';
+                            bubble.style.top = top + 'px';
+                        }
+
+                        // Auto hide after 5 seconds
+                        setTimeout(() => {
+                            bubble.style.display = 'none';
+                        }, 5000);
+                    }
+
+                    // 2. Play Motion
+                    if (msg.motion) {
+                        // Find motion group
+                        // Model motions are stored in model.internalModel.motionManager.definitions
+                        // But pixi-live2d-display provides model.motion() which usually takes group name.
+                        // We try to match loosely.
+                        try {
+                            model.motion(msg.motion);
+                        } catch (e) {
+                            console.warn('Motion not found:', msg.motion);
+                            model.motion('Tap'); // Fallback
+                        }
+                    }
+
+                    // 3. Set Expression
+                    if (msg.expression) {
+                        try {
+                            model.expression(msg.expression);
+                        } catch (e) {
+                            console.warn('Expression not found:', msg.expression);
+                        }
+                    }
+                });
+                
+                console.log('Model loaded!');
+
+                // Initialize UI
+                // initUI(model);
+                
+                // Initialize External Control (Electron)
+                initExternalControl(model);
+
+                // Initialize Window Drag and Resize
+                initWindowControl();
+
+            } catch (e) {
+                logError('Runtime Error: ' + e.message + '\n' + e.stack);
+            }
+        };
+
+        function initWindowControl() {
+        if (!window.electronAPI) return;
+
+        window.isDragging = false;
+        let startX, startY;
+        
+        window.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                // 注意：只有当 ignore=false 时（即鼠标在模型上），这里才会触发
+                window.isDragging = true;
+                startX = e.screenX;
+                startY = e.screenY;
+                window.electronAPI.startDrag({x: startX, y: startY});
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (window.isDragging) {
+                const currentX = e.screenX;
+                const currentY = e.screenY;
+                window.electronAPI.drag({x: currentX, y: currentY});
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+             window.isDragging = false;
+             window.electronAPI.stopDrag();
+             document.dispatchEvent(new CustomEvent('drag-end'));
+        });
+
+        window.addEventListener('wheel', (e) => {
+            const zoomFactor = e.deltaY > 0 ? 0.95 : 1.05;
+            window.electronAPI.resize(zoomFactor);
+        });
+    }
+
+        function initExternalControl(model) {
+            if (window.electronAPI) {
+                console.log('Electron API found. Listening for commands...');
+                window.electronAPI.onCommand((data) => {
+                    console.log('Received external command:', data);
+                    
+                    // Handle Motion
+                    if (data.motion) {
+                        try {
+                            model.motion(data.motion);
+                            console.log('Triggered motion:', data.motion);
+                        } catch (err) {
+                            console.error('Failed to trigger motion:', err);
+                        }
+                    }
+
+                    // Handle Expression
+                    if (data.expression) {
+                         try {
+                            model.expression(data.expression);
+                            console.log('Triggered expression:', data.expression);
+                        } catch (err) {
+                            console.error('Failed to trigger expression:', err);
+                        }
+                    }
+                    
+                    // Handle Expression Reset
+                    if (data.resetExpression) {
+                        model.expression(null);
+                    }
+                });
+            } else {
+                console.log('Electron API not found. Running in browser mode.');
+            }
+        }
+
+        function initUI(model) {
+            // --- Motions ---
+            // Extract motion groups from internal model definitions if available, or use hardcoded list from analysis
+            // The pixi-live2d-display parses definitions into internalModel.settings.motions
+            // But sometimes structure varies. Let's try to inspect definitions or use known list.
+            
+            const motionGroups = ['Idle', 'Tapface', 'Taphair', 'Tapxiongbu', 'Tapqunzi', 'Tapleg'];
+            const motionContainer = document.getElementById('motion-buttons');
+            
+            motionGroups.forEach(group => {
+                const btn = document.createElement('button');
+                btn.textContent = group;
+                btn.onclick = () => {
+                    console.log('Playing motion:', group);
+                    model.motion(group);
+                };
+                motionContainer.appendChild(btn);
+            });
+
+            // --- Expressions ---
+            // Expressions are stored in internalModel.settings.expressions usually
+            // We saw exp1.exp3 to exp7.exp3 in the file
+            const expressions = ['exp1.exp3', 'exp2.exp3', 'exp3.exp3', 'exp4.exp3', 'exp5.exp3', 'exp6.exp3', 'exp7.exp3'];
+            const expContainer = document.getElementById('expression-buttons');
+
+            // Add a "Reset Expression" button
+            const resetBtn = document.createElement('button');
+            resetBtn.textContent = 'Reset';
+            resetBtn.style.backgroundColor = '#6c757d';
+            resetBtn.onclick = () => {
+                model.expression(null); // Or clear expression
+                // Sometimes setting empty expression works, or need to verify API
+                // For pixi-live2d-display, usually passing null clears it or sets default? 
+                // Actually, expressions are additive or replacement. 
+                // Let's just try setting the first one as default if null fails, but let's assume valid API usage.
+                console.log('Resetting expression');
+            };
+            expContainer.appendChild(resetBtn);
+
+            expressions.forEach(exp => {
+                const btn = document.createElement('button');
+                btn.textContent = exp.split('.')[0]; // Show "exp1" instead of "exp1.exp3"
+                btn.onclick = () => {
+                    console.log('Setting expression:', exp);
+                    model.expression(exp);
+                };
+                expContainer.appendChild(btn);
+            });
+
+            // --- Parameters ---
+            // Common parameters to control
+            const paramList = [
+                { id: 'ParamAngleX', name: 'Head X', min: -30, max: 30 },
+                { id: 'ParamAngleY', name: 'Head Y', min: -30, max: 30 },
+                { id: 'ParamAngleZ', name: 'Head Z', min: -30, max: 30 },
+                { id: 'ParamEyeLOpen', name: 'Eye L Open', min: 0, max: 1, default: 1 },
+                { id: 'ParamEyeROpen', name: 'Eye R Open', min: 0, max: 1, default: 1 },
+                { id: 'ParamEyeBallX', name: 'Eye Ball X', min: -1, max: 1 },
+                { id: 'ParamEyeBallY', name: 'Eye Ball Y', min: -1, max: 1 },
+                { id: 'ParamBodyAngleX', name: 'Body X', min: -10, max: 10 },
+                { id: 'ParamMouthOpenY', name: 'Mouth Open', min: 0, max: 1 },
+            ];
+
+            const paramContainer = document.getElementById('param-controls');
+            
+            // Store active overrides
+            const overrides = {};
+
+            paramList.forEach(p => {
+                const row = document.createElement('div');
+                row.className = 'param-row';
+                
+                const label = document.createElement('div');
+                label.className = 'param-label';
+                label.textContent = p.name;
+                
+                const input = document.createElement('input');
+                input.type = 'range';
+                input.min = p.min;
+                input.max = p.max;
+                input.step = 0.01;
+                input.value = p.default || 0;
+                
+                const valDisplay = document.createElement('div');
+                valDisplay.className = 'value-display';
+                valDisplay.textContent = input.value;
+
+                input.addEventListener('input', (e) => {
+                    const val = parseFloat(e.target.value);
+                    valDisplay.textContent = val.toFixed(1);
+                    overrides[p.id] = val;
+                });
+
+                // Double click to reset/release control
+                input.addEventListener('dblclick', () => {
+                    delete overrides[p.id];
+                    valDisplay.textContent = '(Auto)';
+                });
+
+                row.appendChild(label);
+                row.appendChild(input);
+                row.appendChild(valDisplay);
+                paramContainer.appendChild(row);
+            });
+
+            // Update loop to apply overrides
+            // We hook into Pixi's ticker
+            PIXI.Ticker.shared.add(() => {
+                if (!model || !model.internalModel || !model.internalModel.coreModel) return;
+                
+                for (const [id, value] of Object.entries(overrides)) {
+                    // This sets the parameter value, overriding physics for this frame
+                    // Note: setParameterValueById is standard Cubism Core API
+                    model.internalModel.coreModel.setParameterValueById(id, value);
+                }
+            });
+        }
+        // --- TTS Audio Handling ---
+        const ttsAudio = document.createElement('audio');
+        ttsAudio.id = 'tts-audio';
+        document.body.appendChild(ttsAudio);
+
+        let mediaSource = new MediaSource();
+        let sourceBuffer = null;
+        let queue = [];
+        let isSourceOpen = false;
+
+        function resetMediaSource() {
+            if (ttsAudio) {
+                ttsAudio.pause();
+                ttsAudio.currentTime = 0;
+            }
+            if (mediaSource && mediaSource.readyState === 'open') {
+                try {
+                    mediaSource.endOfStream();
+                } catch (e) { /* ignore */ }
+            }
+            
+            mediaSource = new MediaSource();
+            ttsAudio.src = URL.createObjectURL(mediaSource);
+            queue = [];
+            isSourceOpen = false;
+            
+            mediaSource.addEventListener('sourceopen', () => {
+                isSourceOpen = true;
+                try {
+                    if (MediaSource.isTypeSupported('audio/mpeg')) {
+                        sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                        sourceBuffer.addEventListener('updateend', processQueue);
+                        processQueue();
+                    } else {
+                        console.error('audio/mpeg not supported for MediaSource');
+                    }
+                } catch (e) {
+                    console.error('AddSourceBuffer error', e);
+                }
+            });
+        }
+
+        function processQueue() {
+            if (queue.length > 0 && sourceBuffer && !sourceBuffer.updating) {
+                try {
+                    sourceBuffer.appendBuffer(queue.shift());
+                } catch (e) {
+                    console.error('AppendBuffer error', e);
+                    if (e.name === 'QuotaExceededError') {
+                        resetMediaSource();
+                    }
+                }
+            }
+        }
+
+        // Initialize
+        resetMediaSource();
+
+        function hexToUint8Array(hex) {
+            if (!hex) return new Uint8Array(0);
+            const len = hex.length;
+            const bytes = new Uint8Array(len / 2);
+            for (let i = 0; i < len; i += 2) {
+                bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+            }
+            return bytes;
+        }
+
+        if (window.electronAPI && window.electronAPI.onTTSChunk) {
+            window.electronAPI.onTTSChunk((hexChunk) => {
+                const bytes = hexToUint8Array(hexChunk);
+                queue.push(bytes);
+                
+                if (isSourceOpen) {
+                    processQueue();
+                }
+
+                if (ttsAudio.paused) {
+                    ttsAudio.play().catch(e => console.error('Play error', e));
+                }
+            });
+        }
+    </script>
+</body>
+</html>
