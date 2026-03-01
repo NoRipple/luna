@@ -11,8 +11,10 @@
             background-color: transparent;
             font-family: sans-serif;
             user-select: none;
-            /* Debug Border */
-            border: 2px solid #ddf904; /* Green visible border */
+            /* Debug Border / 调试边框 */
+            /* Used to visualize the window boundaries during development */
+            /* 用于在开发过程中可视化窗口边界 */
+            border: 2px solid #ddf904; /* Green visible border / 绿色可见边框 */
             box-sizing: border-box;
             height: 1000vh;
             width: 1000vw;
@@ -135,29 +137,39 @@
 
                 app.stage.addChild(model);
 
-                // Auto scale and center function
-                let isModelScaled = false;
+                // Auto scale and center function / 自动缩放和居中函数
+                let isModelScaled = false; // Flag to lock scale after first calculation / 用于锁定缩放比例的标志
                 
                 const resizeModel = () => {
                     if (!model) return;
                     
+                    // 仅在初始化时计算一次缩放，之后保持不变 (锁定大小)
+                    // Only calculate scale once at initialization to lock the size
                     if (!isModelScaled) {
-                        // 调整缩放逻辑：只展示上半身的三分之二
-                        // 仅在初始化时计算一次缩放，之后保持不变
+                        // 调整缩放逻辑：目标是只展示上半身的三分之二
+                        // Logic: We want to show the upper 2/3 of the body.
+                        
+                        // scaleX: 窗口宽度的 80% / 模型宽度
                         const scaleX = (innerWidth * 0.8) / model.width; 
+                        
+                        // scaleY: 窗口高度的 1.5倍 / 模型高度 (1.5倍是为了让模型更大，从而超出屏幕底部，只显示上半部分)
+                        // scaleY: 1.5x window height to make model larger, pushing lower body off-screen
                         const scaleY = (innerHeight * 1.5) / model.height; 
                         
-                        // 使用较大的缩放比例，确保填满
+                        // 使用较大的缩放比例，确保填满并裁剪
+                        // Use the larger scale factor to ensure filling and cropping
                         const scale = Math.max(scaleX, scaleY) * 0.8; 
                         
                         model.scale.set(scale);
-                        isModelScaled = true;
+                        isModelScaled = true; // Lock scale / 锁定缩放
                     }
                     
                     // 水平居中 (位置随窗口变化而调整，保持居中)
+                    // Horizontal centering (updates with window resize)
                     model.x = (innerWidth - model.width) / 2;
                     
                     // 垂直定位：头部距离顶部 10%
+                    // Vertical positioning: Head at 10% from top
                     model.y = innerHeight * 0.1; 
                 };
 
@@ -293,11 +305,15 @@
                      console.log('Motion Groups:', model.internalModel.motionManager.motionGroups);
                      
                      // Force start idle motion if not playing
-                     // pixi-live2d-display usually auto-plays idle, but let's make sure
-                     // We use a small delay to ensure everything is initialized
+                     // 强制启动待机动作 (如果未自动播放)
+                     // pixi-live2d-display usually auto-plays idle, but let's make sure.
+                     // We use a small delay to ensure everything is initialized.
+                     // 使用延迟确保初始化完成后再尝试播放。
                      setTimeout(() => {
                         console.log('Force checking idle motion...');
                         try {
+                            // Try to play 'Idle' motion group defined in .model3.json
+                            // 尝试播放 .model3.json 中定义的 'Idle' 动作组
                             model.motion('Idle');
                         } catch(e) {
                             console.error('Failed to start Idle motion:', e);
@@ -322,43 +338,48 @@
             }
         };
 
+        // Initialize VTube Studio Adapter (for custom parameter mapping)
+        // 初始化 VTube Studio 适配器 (用于自定义参数映射)
+        // This function maps standard mouse inputs and virtual expressions to VTube Studio-specific parameters.
         function initVTubeStudioAdapter(model, app) {
             console.log('Initializing VTube Studio Adapter...');
             
-            // --- Virtual Expressions Definition ---
+            // --- Virtual Expressions Definition / 虚拟表情定义 ---
+            // These define parameter overrides to simulate emotions.
+            // 当触发这些表情时，对应的参数会被强制设置，覆盖默认值。
             const virtualExpressions = {
                 'Happy': {
-                    'ParamMouthForm2': 1.0, // Smile
-                    'ParamEyeLSmile': 1.0,
-                    'ParamEyeRSmile': 1.0,
-                    'ParamEyeLOpen': 0.8,
-                    'ParamEyeROpen': 0.8
+                    'ParamMouthForm2': 1.0, // Smile / 微笑嘴型
+                    'ParamEyeLSmile': 1.0,  // Left Eye Smile / 左眼笑
+                    'ParamEyeRSmile': 1.0,  // Right Eye Smile / 右眼笑
+                    'ParamEyeLOpen': 0.8,   // Left Eye Openness / 左眼张开度
+                    'ParamEyeROpen': 0.8    // Right Eye Openness / 右眼张开度
                 },
                 'Sad': {
-                    'ParamMouthForm2': -1.0, // Frown
-                    'ParamBrowRY2': -0.5, // Brows down (assuming single control for now or mirroring manually)
+                    'ParamMouthForm2': -1.0, // Frown / 悲伤嘴型
+                    'ParamBrowRY2': -0.5,    // Brows down / 眉毛下垂
                     'ParamEyeLOpen': 0.8,
                     'ParamEyeROpen': 0.8
                 },
                 'Surprised': {
-                    'ParamMouthOpenY': 0.5,
-                    'ParamEyeLOpen': 1.2,
+                    'ParamMouthOpenY': 0.5, // Mouth Open / 张嘴
+                    'ParamEyeLOpen': 1.2,   // Wide Eyes / 瞪眼
                     'ParamEyeROpen': 1.2,
-                    'ParamBrowRY2': 0.5
+                    'ParamBrowRY2': 0.5     // Brows up / 眉毛上扬
                 },
                 'Angry': {
-                    'ParamBrowRY2': -0.8,
+                    'ParamBrowRY2': -0.8,   // Brows Furrowed / 皱眉
                     'ParamEyeLOpen': 0.9,
                     'ParamEyeROpen': 0.9,
-                    'ParamMouthForm2': -0.5
+                    'ParamMouthForm2': -0.5 // Angry Mouth / 愤怒嘴型
                 },
-                'Neutral': {} // Reset
+                'Neutral': {} // Reset to default / 重置
             };
 
             model.currentExpressionParams = {};
             model.targetExpressionParams = {};
             
-            // Method to set virtual expression
+            // Method to set virtual expression / 设置虚拟表情的方法
             model.setVirtualExpression = (name) => {
                 console.log('Setting virtual expression:', name);
                 const target = virtualExpressions[name];
@@ -366,90 +387,74 @@
                     model.targetExpressionParams = target;
                 } else {
                     console.warn('Virtual expression not found:', name);
-                    // Optionally reset or keep current
+                    // Optionally reset if not found / 如果未找到则重置
                     if (name === 'Reset' || name === 'Neutral') {
                         model.targetExpressionParams = {};
                     }
                 }
             };
             
-            // 1. Auto Breathing (ParamBreath)
+            // 1. Auto Breathing (ParamBreath) / 自动呼吸模拟
+            // VTube Studio models often use 'ParamBreath' which needs manual oscillation.
             let breathTime = 0;
             
-            // 2. Mouse Tracking (Map to custom parameters)
-            // VTube Studio uses: ParamAngleX2, ParamAngleX3, ParamAngleX4, ParamEyeBallX, ParamEyeBallY
-            // Standard PixiLive2D uses: ParamAngleX, ParamAngleY, ParamAngleZ, ParamEyeBallX, ParamEyeBallY
+            // 2. Mouse Tracking (Map to custom parameters) / 鼠标追踪 (映射到自定义参数)
+            // VTube Studio uses specific parameters for head movement:
+            // ParamAngleX2, ParamAngleX3, ParamAngleX4 (instead of standard ParamAngleX/Y/Z)
             
-            // We need to listen to mouse movement and manually update these parameters.
-            // PixiLive2D's internal interaction manager might already be updating standard params.
-            // We can hook into the 'update' event of the model.
-            
-            let mouseX = 0; // -1 to 1
-            let mouseY = 0; // -1 to 1
+            let mouseX = 0; // -1 to 1 (Left to Right)
+            let mouseY = 0; // -1 to 1 (Top to Bottom)
             
             window.addEventListener('mousemove', (e) => {
                 // Calculate normalized mouse position relative to window center
-                // X: -1 (left) to 1 (right)
-                // Y: -1 (top) to 1 (bottom)
+                // 计算相对于窗口中心的归一化鼠标位置
                 mouseX = (e.clientX / window.innerWidth) * 2 - 1;
                 mouseY = (e.clientY / window.innerHeight) * 2 - 1;
             });
             
-            // Add update loop
+            // Add update loop to PixiJS ticker / 添加到 PixiJS 更新循环
             app.ticker.add((delta) => {
                 if (!model || !model.internalModel || !model.internalModel.coreModel) return;
                 
-                // --- Breathing ---
+                // --- Breathing Implementation / 呼吸实现 ---
                 breathTime += delta * 0.05;
-                const breathValue = (Math.sin(breathTime) + 1) / 2; // 0 to 1
-                // Try standard and custom breath parameters
+                const breathValue = (Math.sin(breathTime) + 1) / 2; // Oscillate 0 to 1
                 setParam(model, 'ParamBreath', breathValue);
                 
-                // --- Head Tracking ---
-                // ParamAngleX2 (Head X) - Range -30 to 30
-                // ParamAngleX3 (Head Y) - Range -30 to 30
-                // ParamAngleX4 (Head Z) - Range -30 to 30
+                // --- Head Tracking / 头部追踪 ---
+                // Mapping mouse position to head angles with smoothing
+                // 将鼠标位置映射到头部角度，并添加平滑处理
                 
-                // Smoothly interpolate towards target
-                // We use a simple lerp for smoothness
-                const smoothing = 0.1;
-                
-                // Helper for getting current value (if possible) or just maintaining state
-                // Since we don't have easy read access to current param without query, we'll just set it.
-                // Ideally we should read -> lerp -> write.
-                
-                // Let's just set them directly based on mouse for now, the internal physics might smooth it a bit.
-                // But raw setting is jerky. Let's add simple smoothing variables.
+                const smoothing = 0.1; // Smoothing factor (0.1 = slow, 1.0 = instant)
                 
                 if (!model.adapterState) {
                     model.adapterState = {
-                        headX: 0,
-                        headY: 0,
-                        headZ: 0,
-                        eyeX: 0,
-                        eyeY: 0
+                        headX: 0, headY: 0, headZ: 0,
+                        eyeX: 0, eyeY: 0
                     };
                 }
                 
-                const targetHeadX = mouseX * 30;
-                const targetHeadY = -mouseY * 30; // Invert Y
-                const targetHeadZ = mouseX * 10; // Slight tilt
+                // Target angles based on mouse position
+                const targetHeadX = mouseX * 30;  // Max 30 degrees
+                const targetHeadY = -mouseY * 30; // Invert Y for natural look
+                const targetHeadZ = mouseX * 10;  // Slight tilt with horizontal movement
                 
+                // Apply smoothing (Linear Interpolation) / 应用平滑插值
                 model.adapterState.headX += (targetHeadX - model.adapterState.headX) * smoothing;
                 model.adapterState.headY += (targetHeadY - model.adapterState.headY) * smoothing;
                 model.adapterState.headZ += (targetHeadZ - model.adapterState.headZ) * smoothing;
                 
-                setParam(model, 'ParamAngleX2', model.adapterState.headX); // Custom ID from .vtube.json
-                setParam(model, 'ParamAngleX3', model.adapterState.headY); // Custom ID
-                setParam(model, 'ParamAngleX4', model.adapterState.headZ); // Custom ID
+                // Set VTube Studio specific parameters / 设置 VTube Studio 特有参数
+                setParam(model, 'ParamAngleX2', model.adapterState.headX); 
+                setParam(model, 'ParamAngleX3', model.adapterState.headY); 
+                setParam(model, 'ParamAngleX4', model.adapterState.headZ); 
                 
-                // Also set standard parameters just in case
+                // Set standard parameters as backup / 设置标准参数作为备份
                 setParam(model, 'ParamAngleX', model.adapterState.headX);
                 setParam(model, 'ParamAngleY', model.adapterState.headY);
                 setParam(model, 'ParamAngleZ', model.adapterState.headZ);
 
-                // --- Eye Tracking ---
-                // ParamEyeBallX, ParamEyeBallY (-1 to 1)
+                // --- Eye Tracking / 眼球追踪 ---
                 const targetEyeX = mouseX;
                 const targetEyeY = -mouseY;
                 
@@ -459,8 +464,9 @@
                 setParam(model, 'ParamEyeBallX', model.adapterState.eyeX);
                 setParam(model, 'ParamEyeBallY', model.adapterState.eyeY);
 
-                // --- Virtual Expressions (Override) ---
-                // Apply target expression params
+                // --- Virtual Expressions (Override) / 虚拟表情 (覆盖) ---
+                // Apply expression parameters last to override any other values
+                // 最后应用表情参数，以覆盖其他值的变化
                 if (model.targetExpressionParams) {
                     for (const [paramId, targetValue] of Object.entries(model.targetExpressionParams)) {
                          setParam(model, paramId, targetValue);
@@ -469,6 +475,8 @@
             });
         }
         
+        // Helper function to safely set Live2D parameters
+        // 安全设置 Live2D 参数的辅助函数
         function setParam(model, paramId, value) {
             if (model.internalModel && model.internalModel.coreModel) {
                  // Cubism 4
