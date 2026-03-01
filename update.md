@@ -21,6 +21,7 @@
     *   **Fixed Scale & Position**: The model is now locked to a specific scale (showing upper 2/3) at initialization. Window resizing no longer affects model scale, only its position (centering).
     *   **Debug Border**: Added a visible green border (`#ddf904`) to the window for easier debugging and area visualization.
     *   **Disabled Wheel Zoom**: Removed mouse wheel zoom functionality to maintain consistent model presentation.
+    *   **Watermark Removal**: Added `removeWatermark` function to attempt hiding potential watermark parts/parameters for trial version models.
 
 ### Technical Details
 *   Modified `src/renderer/index.html` to include the adapter logic and resize handlers.

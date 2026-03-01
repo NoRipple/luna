@@ -327,6 +327,10 @@
                 // Initialize VTube Studio Adapter (for custom parameter mapping)
                 initVTubeStudioAdapter(model, app);
 
+                // Attempt to remove potential watermark
+                // 尝试移除可能存在的水印 (通过隐藏包含 logo/watermark 等关键词的部件或参数)
+                removeWatermark(model);
+
                 // Initialize External Control (Electron)
                 initExternalControl(model);
 
@@ -337,6 +341,77 @@
                 logError('Runtime Error: ' + e.message + '\n' + e.stack);
             }
         };
+
+        // Helper function to remove watermark from model (Trial Version)
+        // 尝试移除模型水印的辅助函数 (试用版通常会包含水印)
+        function removeWatermark(model) {
+            console.log('Attempting to remove watermark...');
+            
+            // Keywords to search for in ArtMesh names or Parameter IDs
+            // 在 ArtMesh 名称或参数 ID 中搜索的关键词
+            const keywords = ['watermark', 'logo', 'copyright', 'credit', 'trial', 'author', 'name', 'sign', 'text'];
+            
+            try {
+                // 1. Check ArtMeshes (pixi-live2d-display exposes meshes)
+                if (model.meshes) {
+                    model.meshes.forEach(mesh => {
+                        // mesh.name is usually the ArtMesh ID from Cubism Editor
+                        const name = (mesh.name || '').toLowerCase();
+                        
+                        // Check if name contains any keyword
+                        if (keywords.some(k => name.includes(k))) {
+                            console.log(`Hiding mesh: ${mesh.name}`);
+                            mesh.alpha = 0;      // Set opacity to 0
+                            mesh.visible = false; // Hide from rendering
+                        }
+                    });
+                }
+                
+                // 2. Check Parameters (Some models use a parameter to toggle watermark opacity)
+                // Cubism 4 Core
+                if (model.internalModel && model.internalModel.coreModel) {
+                    const core = model.internalModel.coreModel;
+                    // Check if getParameterCount exists (Cubism 4)
+                    if (core.getParameterCount) {
+                        const count = core.getParameterCount();
+                        const ids = core.getParameterIds(); // Array of strings
+                        
+                        for (let i = 0; i < count; i++) {
+                            const id = ids[i];
+                            const name = id.toLowerCase(); 
+                            
+                            if (keywords.some(k => name.includes(k))) {
+                                console.log(`Disabling parameter: ${id}`);
+                                // Set parameter to 0 (usually means hidden/off)
+                                core.setParameterValueByIndex(i, 0); 
+                            }
+                        }
+                    }
+                }
+                
+                // 3. Check Parts (Parts control visibility of groups of ArtMeshes)
+                // Cubism 4 Core
+                if (model.internalModel && model.internalModel.coreModel && model.internalModel.coreModel.getPartCount) {
+                     const core = model.internalModel.coreModel;
+                     const count = core.getPartCount();
+                     const ids = core.getPartIds(); // Array of strings
+                     
+                     for (let i = 0; i < count; i++) {
+                         const id = ids[i];
+                         const name = id.toLowerCase();
+                         
+                         if (keywords.some(k => name.includes(k))) {
+                             console.log(`Hiding part: ${id}`);
+                             // Set part opacity to 0
+                             core.setPartOpacityByIndex(i, 0);
+                         }
+                     }
+                }
+                
+            } catch (e) {
+                console.warn('Failed to remove watermark:', e);
+            }
+        }
 
         // Initialize VTube Studio Adapter (for custom parameter mapping)
         // 初始化 VTube Studio 适配器 (用于自定义参数映射)
