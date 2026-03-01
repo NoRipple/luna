@@ -11,6 +11,11 @@
             background-color: transparent;
             font-family: sans-serif;
             user-select: none;
+            /* Debug Border */
+            border: 2px solid #ddf904; /* Green visible border */
+            box-sizing: border-box;
+            height: 1000vh;
+            width: 1000vw;
         }
         canvas {
             display: block;
@@ -121,7 +126,8 @@
                 // Path to your model
                 // 注意：因为 index.html 现在在 src/renderer 目录，而模型在 assets 目录
                 // 相对路径应该是 ../../assets/Murasame/Murasame.model3.json
-                const modelPath = '../../assets/Murasame/Murasame.model3.json';
+                // const modelPath = '../../assets/Murasame/Murasame.model3.json';
+                const modelPath = '../../assets/Jellyfish/星月水母 试用版.model3.json';
                 
                 console.log('Loading model from:', modelPath);
 
@@ -129,14 +135,37 @@
 
                 app.stage.addChild(model);
 
-                // Auto scale and center
-                const scaleX = (innerWidth * 0.5) / model.width;
-                const scaleY = (innerHeight * 0.8) / model.height;
-                const scale = Math.min(scaleX, scaleY);
+                // Auto scale and center function
+                let isModelScaled = false;
                 
-                model.scale.set(scale);
-                model.x = (innerWidth - model.width) / 2;
-                model.y = (innerHeight - model.height) / 2;
+                const resizeModel = () => {
+                    if (!model) return;
+                    
+                    if (!isModelScaled) {
+                        // 调整缩放逻辑：只展示上半身的三分之二
+                        // 仅在初始化时计算一次缩放，之后保持不变
+                        const scaleX = (innerWidth * 0.8) / model.width; 
+                        const scaleY = (innerHeight * 1.5) / model.height; 
+                        
+                        // 使用较大的缩放比例，确保填满
+                        const scale = Math.max(scaleX, scaleY) * 0.8; 
+                        
+                        model.scale.set(scale);
+                        isModelScaled = true;
+                    }
+                    
+                    // 水平居中 (位置随窗口变化而调整，保持居中)
+                    model.x = (innerWidth - model.width) / 2;
+                    
+                    // 垂直定位：头部距离顶部 10%
+                    model.y = innerHeight * 0.1; 
+                };
+
+                // Initial resize
+                resizeModel();
+
+                // Handle window resize
+                window.addEventListener('resize', resizeModel);
                 
                 // 初始状态下，让鼠标穿透，但允许 forward (这样才能检测到 pointerover)
                 window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
@@ -238,14 +267,18 @@
                             model.motion(msg.motion);
                         } catch (e) {
                             console.warn('Motion not found:', msg.motion);
-                            model.motion('Tap'); // Fallback
+                            model.motion('TapBody'); // Fallback (Changed from 'Tap' to 'TapBody' for Jellyfish)
                         }
                     }
 
                     // 3. Set Expression
                     if (msg.expression) {
                         try {
-                            model.expression(msg.expression);
+                            if (model.setVirtualExpression) {
+                                model.setVirtualExpression(msg.expression);
+                            } else {
+                                model.expression(msg.expression);
+                            }
                         } catch (e) {
                             console.warn('Expression not found:', msg.expression);
                         }
@@ -254,9 +287,30 @@
                 
                 console.log('Model loaded!');
 
+                // Check and log motion definitions
+                if (model.internalModel && model.internalModel.motionManager) {
+                     console.log('Motion Definitions:', model.internalModel.motionManager.definitions);
+                     console.log('Motion Groups:', model.internalModel.motionManager.motionGroups);
+                     
+                     // Force start idle motion if not playing
+                     // pixi-live2d-display usually auto-plays idle, but let's make sure
+                     // We use a small delay to ensure everything is initialized
+                     setTimeout(() => {
+                        console.log('Force checking idle motion...');
+                        try {
+                            model.motion('Idle');
+                        } catch(e) {
+                            console.error('Failed to start Idle motion:', e);
+                        }
+                     }, 1000);
+                }
+
                 // Initialize UI
                 // initUI(model);
                 
+                // Initialize VTube Studio Adapter (for custom parameter mapping)
+                initVTubeStudioAdapter(model, app);
+
                 // Initialize External Control (Electron)
                 initExternalControl(model);
 
@@ -267,6 +321,163 @@
                 logError('Runtime Error: ' + e.message + '\n' + e.stack);
             }
         };
+
+        function initVTubeStudioAdapter(model, app) {
+            console.log('Initializing VTube Studio Adapter...');
+            
+            // --- Virtual Expressions Definition ---
+            const virtualExpressions = {
+                'Happy': {
+                    'ParamMouthForm2': 1.0, // Smile
+                    'ParamEyeLSmile': 1.0,
+                    'ParamEyeRSmile': 1.0,
+                    'ParamEyeLOpen': 0.8,
+                    'ParamEyeROpen': 0.8
+                },
+                'Sad': {
+                    'ParamMouthForm2': -1.0, // Frown
+                    'ParamBrowRY2': -0.5, // Brows down (assuming single control for now or mirroring manually)
+                    'ParamEyeLOpen': 0.8,
+                    'ParamEyeROpen': 0.8
+                },
+                'Surprised': {
+                    'ParamMouthOpenY': 0.5,
+                    'ParamEyeLOpen': 1.2,
+                    'ParamEyeROpen': 1.2,
+                    'ParamBrowRY2': 0.5
+                },
+                'Angry': {
+                    'ParamBrowRY2': -0.8,
+                    'ParamEyeLOpen': 0.9,
+                    'ParamEyeROpen': 0.9,
+                    'ParamMouthForm2': -0.5
+                },
+                'Neutral': {} // Reset
+            };
+
+            model.currentExpressionParams = {};
+            model.targetExpressionParams = {};
+            
+            // Method to set virtual expression
+            model.setVirtualExpression = (name) => {
+                console.log('Setting virtual expression:', name);
+                const target = virtualExpressions[name];
+                if (target) {
+                    model.targetExpressionParams = target;
+                } else {
+                    console.warn('Virtual expression not found:', name);
+                    // Optionally reset or keep current
+                    if (name === 'Reset' || name === 'Neutral') {
+                        model.targetExpressionParams = {};
+                    }
+                }
+            };
+            
+            // 1. Auto Breathing (ParamBreath)
+            let breathTime = 0;
+            
+            // 2. Mouse Tracking (Map to custom parameters)
+            // VTube Studio uses: ParamAngleX2, ParamAngleX3, ParamAngleX4, ParamEyeBallX, ParamEyeBallY
+            // Standard PixiLive2D uses: ParamAngleX, ParamAngleY, ParamAngleZ, ParamEyeBallX, ParamEyeBallY
+            
+            // We need to listen to mouse movement and manually update these parameters.
+            // PixiLive2D's internal interaction manager might already be updating standard params.
+            // We can hook into the 'update' event of the model.
+            
+            let mouseX = 0; // -1 to 1
+            let mouseY = 0; // -1 to 1
+            
+            window.addEventListener('mousemove', (e) => {
+                // Calculate normalized mouse position relative to window center
+                // X: -1 (left) to 1 (right)
+                // Y: -1 (top) to 1 (bottom)
+                mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+                mouseY = (e.clientY / window.innerHeight) * 2 - 1;
+            });
+            
+            // Add update loop
+            app.ticker.add((delta) => {
+                if (!model || !model.internalModel || !model.internalModel.coreModel) return;
+                
+                // --- Breathing ---
+                breathTime += delta * 0.05;
+                const breathValue = (Math.sin(breathTime) + 1) / 2; // 0 to 1
+                // Try standard and custom breath parameters
+                setParam(model, 'ParamBreath', breathValue);
+                
+                // --- Head Tracking ---
+                // ParamAngleX2 (Head X) - Range -30 to 30
+                // ParamAngleX3 (Head Y) - Range -30 to 30
+                // ParamAngleX4 (Head Z) - Range -30 to 30
+                
+                // Smoothly interpolate towards target
+                // We use a simple lerp for smoothness
+                const smoothing = 0.1;
+                
+                // Helper for getting current value (if possible) or just maintaining state
+                // Since we don't have easy read access to current param without query, we'll just set it.
+                // Ideally we should read -> lerp -> write.
+                
+                // Let's just set them directly based on mouse for now, the internal physics might smooth it a bit.
+                // But raw setting is jerky. Let's add simple smoothing variables.
+                
+                if (!model.adapterState) {
+                    model.adapterState = {
+                        headX: 0,
+                        headY: 0,
+                        headZ: 0,
+                        eyeX: 0,
+                        eyeY: 0
+                    };
+                }
+                
+                const targetHeadX = mouseX * 30;
+                const targetHeadY = -mouseY * 30; // Invert Y
+                const targetHeadZ = mouseX * 10; // Slight tilt
+                
+                model.adapterState.headX += (targetHeadX - model.adapterState.headX) * smoothing;
+                model.adapterState.headY += (targetHeadY - model.adapterState.headY) * smoothing;
+                model.adapterState.headZ += (targetHeadZ - model.adapterState.headZ) * smoothing;
+                
+                setParam(model, 'ParamAngleX2', model.adapterState.headX); // Custom ID from .vtube.json
+                setParam(model, 'ParamAngleX3', model.adapterState.headY); // Custom ID
+                setParam(model, 'ParamAngleX4', model.adapterState.headZ); // Custom ID
+                
+                // Also set standard parameters just in case
+                setParam(model, 'ParamAngleX', model.adapterState.headX);
+                setParam(model, 'ParamAngleY', model.adapterState.headY);
+                setParam(model, 'ParamAngleZ', model.adapterState.headZ);
+
+                // --- Eye Tracking ---
+                // ParamEyeBallX, ParamEyeBallY (-1 to 1)
+                const targetEyeX = mouseX;
+                const targetEyeY = -mouseY;
+                
+                model.adapterState.eyeX += (targetEyeX - model.adapterState.eyeX) * smoothing;
+                model.adapterState.eyeY += (targetEyeY - model.adapterState.eyeY) * smoothing;
+                
+                setParam(model, 'ParamEyeBallX', model.adapterState.eyeX);
+                setParam(model, 'ParamEyeBallY', model.adapterState.eyeY);
+
+                // --- Virtual Expressions (Override) ---
+                // Apply target expression params
+                if (model.targetExpressionParams) {
+                    for (const [paramId, targetValue] of Object.entries(model.targetExpressionParams)) {
+                         setParam(model, paramId, targetValue);
+                    }
+                }
+            });
+        }
+        
+        function setParam(model, paramId, value) {
+            if (model.internalModel && model.internalModel.coreModel) {
+                 // Cubism 4
+                 model.internalModel.coreModel.setParameterValueById(paramId, value);
+            } else if (model.internalModel) {
+                 // Cubism 2 or other (fallback)
+                 // model.internalModel.setParamFloat(paramId, value);
+            }
+        }
 
         function initWindowControl() {
         if (!window.electronAPI) return;
@@ -298,10 +509,7 @@
              document.dispatchEvent(new CustomEvent('drag-end'));
         });
 
-        window.addEventListener('wheel', (e) => {
-            const zoomFactor = e.deltaY > 0 ? 0.95 : 1.05;
-            window.electronAPI.resize(zoomFactor);
-        });
+
     }
 
         function initExternalControl(model) {

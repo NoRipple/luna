@@ -9,7 +9,7 @@ class ScreenSensor extends EventEmitter {
     constructor() {
         super();
         this.intervalId = null;
-        this.interval = 60000; // 1 minute
+        this.interval = 20000; // 20 seconds
         this.isCapturing = false;
     }
 

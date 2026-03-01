@@ -1,0 +1,41 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "星月水母 试用版.moc3",
+		"Textures": [
+			"星月水母 试用版.8192/texture_00.png"
+		],
+		"Physics": "星月水母 试用版.physics3.json",
+		"DisplayInfo": "星月水母 试用版.cdi3.json",
+        "Motions": {
+            "Idle": [
+                {
+                    "File": "Scene1.motion3.json"
+                }
+            ],
+            "TapBody": [
+                {
+                    "File": "Scene1.motion3.json"
+                }
+            ]
+        }
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthForm2",
+				"ParamMouthOpenY"
+			]
+		}
+	]
+}
