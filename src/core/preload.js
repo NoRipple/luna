@@ -2,11 +2,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     onCommand: (callback) => ipcRenderer.on('live2d-command', (_event, value) => callback(value)),
+    getLive2DConfig: () => ipcRenderer.invoke('get-live2d-config'),
     startDrag: (pos) => ipcRenderer.send('window-drag-start', pos),
     drag: (pos) => ipcRenderer.send('window-drag', pos),
-    stopDrag: () => ipcRenderer.send('window-drag-stop'),
     resize: (factor) => ipcRenderer.send('window-resize', factor),
     setIgnoreMouseEvents: (ignore, options) => ipcRenderer.send('set-ignore-mouse-events', ignore, options),
+    openChatPanel: () => ipcRenderer.send('open-chat-panel'),
     
     // LLM APIs
     chatWithText: (prompt) => ipcRenderer.invoke('llm-text', prompt),
@@ -14,5 +15,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     speak: (text) => ipcRenderer.invoke('tts-speak', text),
     onLLMChunk: (callback) => ipcRenderer.on('llm-chunk', (_event, chunk) => callback(chunk)),
     onCompanionMessage: (callback) => ipcRenderer.on('companion-message', (_event, msg) => callback(msg)),
-    onTTSChunk: (callback) => ipcRenderer.on('tts-chunk', (_event, chunk) => callback(chunk))
+    onGlobalMouseMove: (callback) => ipcRenderer.on('global-mouse-position', (_event, payload) => callback(payload)),
+    onLive2DModelSwitched: (callback) => ipcRenderer.on('live2d-model-switched', (_event, payload) => callback(payload)),
+    getUIHistorySnapshot: () => ipcRenderer.invoke('ui-history-snapshot'),
+    sendUICommand: (text) => ipcRenderer.invoke('ui-send-command', text),
+    onUIHistoryUpdated: (callback) => ipcRenderer.on('ui-history-updated', (_event, payload) => callback(payload)),
+    listLive2DModels: () => ipcRenderer.invoke('live2d-list-models'),
+    getActiveLive2DModelInfo: () => ipcRenderer.invoke('live2d-get-active-model-info'),
+    switchLive2DModel: (targetModel) => ipcRenderer.invoke('live2d-switch-model', targetModel),
+    onTTSChunk: (callback) => ipcRenderer.on('tts-chunk', (_event, chunk) => callback(chunk)),
+    onTTSEnd: (callback) => ipcRenderer.on('tts-ended', (_event, value) => callback(value)),
+    notifyTTSPlaybackEnded: (jobId) => ipcRenderer.send('tts-playback-ended', { jobId })
 });

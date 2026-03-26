@@ -1,19 +1,23 @@
 const { app } = require('electron');
+const config = require('../../config/runtimeConfig');
 
 class TTSService {
     constructor() {
-        this.apiKey = 'sk-api-XJOL8GswTk_pNhggQSTkihM1Gk-rHG7cHruPWX2H0tb3AelI9k6-lW2KZBsj_iJW3BB8e8PC1GJYjCx06y1pIBo7XCUNOewWPCtI5wPhUqvfVUrTVfRQx40';
-        this.baseUrl = 'https://api.minimaxi.com/v1/t2a_v2';
-        this.voiceId = 'Chinese (Mandarin)_Gentle_Senior'; 
+        this.apiKey = config.tts.apiKey;
+        this.baseUrl = config.tts.baseUrl;
+        this.voiceId = config.tts.voiceId;
     }
 
     async speakStream(text, onAudioChunk, signal) {
         if (!text) return;
 
         const payload = {
-            model: "speech-01-turbo",
+            model: config.tts.model,
             text: text,
             stream: true,
+            stream_options: {
+                exclude_aggregated_audio: true
+            },
             voice_setting: {
                 voice_id: this.voiceId,
                 speed: 1,

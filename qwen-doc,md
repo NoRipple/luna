@@ -1,0 +1,256 @@
+## 多轮对话
+通义千问 API 是无状态的，不会保存对话历史。要实现多轮对话，需在每次请求中显式传入历史对话消息，并可结合截断、摘要、召回等策略，高效管理上下文，减少 Token 消耗。
+
+本文介绍如何通过 OpenAI 兼容的 Chat Completion 接口或 DashScope 接口实现多轮对话。 Responses API 可更便捷地实现多轮对话，参见：OpenAI兼容-Responses。
+工作原理
+实现多轮对话的核心是维护一个 messages 数组。每一轮对话都需要将用户的最新提问和模型的回复追加到此数组中，并将其作为下一次请求的输入。
+
+以下示例为多轮对话时 messages 的状态变化：
+
+第一轮对话
+
+向messages 数组添加用户问题。
+
+ 
+// 使用文本模型
+[
+    {"role": "user", "content": "推荐一部关于太空探索的科幻电影。"}
+]
+
+// 使用多模态模型，以 Qwen-VL 为例
+// {"role": "user",
+//       "content": [{"type": "image_url","image_url": {"url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20251031/ownrof/f26d201b1e3f4e62ab4a1fc82dd5c9bb.png"}},
+//                   {"type": "text", "text": "请问图片展现了有哪些商品？"}]
+// }
+第二轮对话
+
+向messages数组添加大模型回复内容与用户的最新提问。
+
+ 
+// 使用文本模型
+[
+    {"role": "user", "content": "推荐一部关于太空探索的科幻电影。"},
+    {"role": "assistant", "content": "我推荐《xxx》，这是一部经典的科幻作品。"},
+    {"role": "user", "content": "这部电影的导演是谁？"}
+]
+
+// 使用多模态模型，以 Qwen-VL 为例
+//[
+//    {"role": "user", "content": [
+//                    {"type": "image_url","image_url": {"url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20251031/ownrof/f26d201b1e3f4e62ab4a1fc82dd5c9bb.png"}},
+//                   {"type": "text", "text": "请问图片展现了有哪些商品？"}]},
+//    {"role": "assistant", "content": "图片展示了三件商品：一件浅蓝色背带裤、一件蓝白条纹短袖衬衫和一双白色运动鞋。"},
+//    {"role": "user", "content": "它们属于什么风格？"}
+//]
+快速开始
+OpenAI兼容DashScope
+PythonNode.jscurl
+ 
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    # 若没有配置环境变量，请用阿里云百炼API Key将下行替换为：api_key="sk-xxx",
+    # 各地域的API Key不同。获取API Key：https://help.aliyun.com/zh/model-studio/get-api-key
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    # 以下是北京地域base_url，如果使用新加坡地域的模型，需要将base_url替换为：https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+
+def get_response(messages):
+    completion = client.chat.completions.create(
+        model="qwen-plus",
+        messages=messages
+    )
+    return completion.choices[0].message.content
+
+# 初始化 messages
+messages = []
+
+# 第 1 轮
+messages.append({"role": "user", "content": "推荐一部关于太空探索的科幻电影。"})
+print("第1轮")
+print(f"用户：{messages[0]['content']}")
+assistant_output = get_response(messages)
+messages.append({"role": "assistant", "content": assistant_output})
+print(f"模型：{assistant_output}\n")
+
+# 第 2 轮
+messages.append({"role": "user", "content": "这部电影的导演是谁？"})
+print("第2轮")
+print(f"用户：{messages[-1]['content']}")
+assistant_output = get_response(messages)
+messages.append({"role": "assistant", "content": assistant_output})
+print(f"模型：{assistant_output}\n")
+多模态模型的多轮对话
+说明
+本章节适用于Qwen-VL、Kimi-K2.5、Qwen-Audio、GUI-Plus模型，Qwen-Omni具体实现方法请参见全模态。
+
+Qwen-VL-OCR、Qwen3-Omni-Captioner是为特定单轮任务设计的模型，不支持多轮对话。
+
+多模态模型支持在对话中加入图片、音频等内容，其多轮对话的实现方式与文本模型主要有以下不同：
+
+用户消息（user message）的构造方式：多模态模型的用户消息不仅包含文本，还包含图片、音频等多模态信息。
+
+DashScope SDK接口：使用 DashScope Python SDK 时，需调用 MultiModalConversation 接口；使用DashScope Java SDK 时，需调用 MultiModalConversation 类。
+
+OpenAI兼容DashScope
+PythonNode.jscurl
+ 
+from openai import OpenAI
+import os
+
+client = OpenAI(
+    # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx" 
+    # 各地域的API Key不同。获取API Key：https://help.aliyun.com/zh/model-studio/get-api-key
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    # 以下是北京地域base_url，如果使用新加坡地域的模型，需要将base_url替换为：https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+messages = [
+        {
+        "role": "user",
+        "content": [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20251031/ownrof/f26d201b1e3f4e62ab4a1fc82dd5c9bb.png"
+                },
+            },
+            {"type": "text", "text": "请问图片展现了有哪些商品？"},
+        ],
+    }
+]
+
+completion = client.chat.completions.create(
+    model="qwen3-vl-plus",  # 可按需更换为其它多模态模型，并修改相应的 messages
+    messages=messages,
+    )
+    
+print(f"第一轮输出：{completion.choices[0].message.content}")
+
+assistant_message = completion.choices[0].message
+messages.append(assistant_message.model_dump())
+messages.append({
+        "role": "user",
+        "content": [
+        {
+            "type": "text",
+            "text": "它们属于什么风格？"
+        }
+        ]
+    })
+completion = client.chat.completions.create(
+    model="qwen3-vl-plus",
+    messages=messages,
+    )
+    
+print(f"第二轮输出：{completion.choices[0].message.content}")
+思考模型的多轮对话
+思考模型返回reasoning_content（思考过程）与content（回复内容）两个字段。更新 messages 数组时，仅保留content字段，忽略reasoning_content字段。
+
+ 
+[
+    {"role": "user", "content": "推荐一部关于太空探索的科幻电影。"},
+    {"role": "assistant", "content": "我推荐《xxx》，这是一部经典的科幻作品。"}, # 添加上下文时请勿添加reasoning_content字段
+    {"role": "user", "content": "这部电影的导演是谁？"}
+]
+思考模型详情参见：深度思考、视觉理解、视觉推理。
+Qwen3-Omni-Flash（思考模式）实现多轮对话请参见全模态。
+OpenAI兼容DashScope
+PythonNode.jsHTTP
+示例代码
+ 
+from openai import OpenAI
+import os
+
+# 初始化OpenAI客户端
+client = OpenAI(
+    # 如果没有配置环境变量，请用阿里云百炼API Key替换：api_key="sk-xxx"
+    # 各地域的API Key不同。获取API Key：https://help.aliyun.com/zh/model-studio/get-api-key
+    api_key = os.getenv("DASHSCOPE_API_KEY"),
+    # 以下是北京地域base_url，如果使用新加坡地域的模型，需要将base_url替换为：https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+
+messages = []
+conversation_idx = 1
+while True:
+    reasoning_content = ""  # 定义完整思考过程
+    answer_content = ""     # 定义完整回复
+    is_answering = False   # 判断是否结束思考过程并开始回复
+    print("="*20+f"第{conversation_idx}轮对话"+"="*20)
+    conversation_idx += 1
+    user_msg = {"role": "user", "content": input("请输入你的消息：")}
+    messages.append(user_msg)
+    # 创建聊天完成请求
+    completion = client.chat.completions.create(
+        # 您可以按需更换为其它深度思考模型
+        model="qwen-plus",
+        messages=messages,
+        extra_body={"enable_thinking": True},
+        stream=True,
+        # stream_options={
+        #     "include_usage": True
+        # }
+    )
+    print("\n" + "=" * 20 + "思考过程" + "=" * 20 + "\n")
+    for chunk in completion:
+        # 如果chunk.choices为空，则打印usage
+        if not chunk.choices:
+            print("\nUsage:")
+            print(chunk.usage)
+        else:
+            delta = chunk.choices[0].delta
+            # 打印思考过程
+            if hasattr(delta, 'reasoning_content') and delta.reasoning_content != None:
+                print(delta.reasoning_content, end='', flush=True)
+                reasoning_content += delta.reasoning_content
+            else:
+                # 开始回复
+                if delta.content != "" and is_answering is False:
+                    print("\n" + "=" * 20 + "完整回复" + "=" * 20 + "\n")
+                    is_answering = True
+                # 打印回复过程
+                print(delta.content, end='', flush=True)
+                answer_content += delta.content
+    # 将模型回复的content添加到上下文中
+    messages.append({"role": "assistant", "content": answer_content})
+    print("\n")
+应用于生产环境
+多轮对话会带来巨大的 Token 消耗，且容易超出大模型上下文最大长度导致报错。以下策略可帮助您有效管理上下文与控制成本。
+
+1. 上下文管理
+messages 数组会随对话轮次增加而变长，最终可能超出模型的 Token 限制。建议参考以下内容，在对话过程中管理上下文长度。
+
+1.1. 上下文截断
+当对话历史过长时，保留最近的 N 轮对话历史。该方式实现简单，但会丢失较早的对话信息。
+
+1.2. 滚动摘要
+为了在不丢失核心信息的前提下动态压缩对话历史，控制上下文长度，可随着对话的进行对上下文进行摘要：
+
+a. 对话历史达到一定长度（如上下文长度最大值的 70%）时，将对话历史中较早的部分（如前一半）提取出来，发起独立 API 调用使大模型对这部分内容生成“记忆摘要”；
+
+b. 构建下一次请求时，用“记忆摘要”替换冗长的对话历史，并拼接最近的几轮对话。
+
+1.3. 向量化召回
+滚动摘要会丢失部分信息，为了使模型可以从海量对话历史中“回忆”起相关信息，可将对话管理从“线性传递”转变为“按需检索”：
+
+a. 每轮对话结束后，将该轮对话存入向量数据库；
+
+b. 用户提问时，通过相似度检索相关对话记录；
+
+c. 将检索到的对话记录与最近的用户输入拼接后输入大模型。  
+
+2. 成本控制
+输入 Token 数会随着对话轮数增加，显著增加使用成本，以下成本管理策略供您参考。
+
+2.1. 减少输入 Token
+通过上文介绍的上下文管理策略减少输入 Token，降低成本。
+
+2.2. 使用支持上下文缓存的模型
+发起多轮对话请求时，messages 部分会重复计算并计费。阿里云百炼对qwen-max、qwen-plus等模型提供了上下文缓存功能，可以降低使用成本并提升响应速度，建议优先使用支持上下文缓存的模型。
+
+上下文缓存功能自动开启，无需修改代码。
+错误码
+如果模型调用失败并返回报错信息，请参见错误信息进行解决。

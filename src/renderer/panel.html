@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700&family=Zen+Old+Mincho:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./panel.css">
+</head>
+<body class="panel-window">
+    <section id="chat-panel" class="open" aria-hidden="false">
+        <header id="chat-panel-header">
+            <div class="panel-title-group">
+                <span class="panel-kicker">Assistant Panel</span>
+                <strong>对话面板</strong>
+                <p id="chat-panel-substatus">当前历史与任务状态会在这里更新。</p>
+            </div>
+            <div class="panel-status-cluster">
+                <span class="panel-badge" id="chat-status">空闲</span>
+            </div>
+        </header>
+
+        <nav id="panel-nav" aria-label="panel views">
+            <button id="panel-tab-chat" class="panel-tab active" type="button" data-view="chat">对话</button>
+            <button id="panel-tab-live2d" class="panel-tab" type="button" data-view="live2d">形象管理</button>
+        </nav>
+
+        <section id="panel-view-chat" class="panel-view active" data-view="chat">
+            <article id="perception-live-card" class="realtime-perception">
+                <div class="realtime-header">
+                    <span class="realtime-kicker">Realtime Perception</span>
+                    <span id="perception-live-time" class="realtime-time">--:--</span>
+                </div>
+                <div class="realtime-main">
+                    <span id="perception-live-status" class="realtime-status">空闲</span>
+                    <p id="perception-live-summary" class="realtime-summary">暂无感知结果</p>
+                </div>
+                <pre id="perception-live-detail" class="realtime-detail"></pre>
+                <span id="perception-live-tip" class="realtime-tip">点击展开详情</span>
+            </article>
+
+            <article id="todo-board-card" class="todo-board">
+                <div class="todo-board-header">
+                    <span class="todo-board-kicker">Execution Plan</span>
+                    <span id="todo-board-time" class="todo-board-time">--:--</span>
+                </div>
+                <p id="todo-board-summary" class="todo-board-summary">暂无执行计划</p>
+                <div id="todo-board-list" class="todo-board-list"></div>
+            </article>
+
+            <div id="chat-history"></div>
+
+            <div id="chat-input-area">
+                <label class="input-caption" for="chat-input">发送指令</label>
+                <textarea id="chat-input" placeholder="输入你的命令..." rows="3"></textarea>
+                <div class="input-actions">
+                    <span class="input-tip">Enter 发送，Shift + Enter 换行</span>
+                    <button id="chat-send" type="button">发送</button>
+                </div>
+            </div>
+        </section>
+
+        <section id="panel-view-live2d" class="panel-view" data-view="live2d">
+            <div id="live2d-manage-area">
+                <label class="input-caption" for="live2d-model-select">当前形象</label>
+                <select id="live2d-model-select"></select>
+                <div class="live2d-manage-actions">
+                    <button id="live2d-switch" type="button">切换形象</button>
+                    <span id="live2d-switch-status">请选择形象并切换</span>
+                </div>
+            </div>
+
+            <div class="live2d-info-group">
+                <h4>动作列表</h4>
+                <div id="live2d-motions" class="live2d-pill-list"></div>
+            </div>
+
+            <div class="live2d-info-group">
+                <h4>表情列表</h4>
+                <div id="live2d-expressions" class="live2d-pill-list"></div>
+            </div>
+        </section>
+    </section>
+
+    <div id="error-log"></div>
+    <script src="./panel.js"></script>
+</body>
+</html>

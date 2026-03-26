@@ -9,7 +9,7 @@ class ScreenSensor extends EventEmitter {
     constructor() {
         super();
         this.intervalId = null;
-        this.interval = 20000; // 20 seconds
+        this.interval = 30000; // 20 seconds
         this.isCapturing = false;
     }
 
@@ -57,15 +57,47 @@ class ScreenSensor extends EventEmitter {
 
             const imageBuffer = fs.readFileSync(tempImgPath);
             const base64Image = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
+            const activeWindowTitle = await this.getActiveWindowTitle();
+            const capturedAt = Date.now();
 
             fs.unlinkSync(tempImgPath);
 
-            this.emit('capture', base64Image);
+            this.emit('capture', { base64Image, activeWindowTitle, capturedAt });
         } catch (error) {
             console.error('Screen capture failed:', error);
         } finally {
             this.isCapturing = false;
         }
+    }
+
+    async getActiveWindowTitle() {
+        if (process.platform !== 'win32') return '';
+        const script = `
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class Win32 {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+}
+"@
+$hwnd = [Win32]::GetForegroundWindow()
+$sb = New-Object System.Text.StringBuilder 1024
+[Win32]::GetWindowText($hwnd, $sb, $sb.Capacity) | Out-Null
+$sb.ToString()
+`.trim();
+
+        return await new Promise((resolve) => {
+            execFile('powershell', ['-NoProfile', '-Command', script], (error, stdout) => {
+                if (error) {
+                    console.warn('Get active window title failed:', error.message);
+                    resolve('');
+                    return;
+                }
+                resolve(String(stdout || '').trim());
+            });
+        });
     }
 }
 
