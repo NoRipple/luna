@@ -1,3 +1,4 @@
+/* 主要职责：封装文本转语音服务调用，负责向外提供音频流输出。 */
 const { app } = require('electron');
 const config = require('../../config/runtimeConfig');
 
@@ -112,3 +113,4 @@ class TTSService {
 }
 
 module.exports = new TTSService();
+

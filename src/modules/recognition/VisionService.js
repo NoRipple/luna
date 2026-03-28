@@ -1,4 +1,6 @@
+/* 主要职责：负责截图去重、冷却判断和视觉模型调用，将屏幕内容转为结构化环境描述。 */
 const llmService = require('../thinking/LLMService');
+const { extractFirstJsonObject } = require('../thinking/JsonUtils');
 const config = require('../../config/runtimeConfig');
 const sharp = require('sharp');
 const fs = require('fs');
@@ -13,15 +15,30 @@ class VisionService {
         this.lowFreqSize = Number(config.vision?.lowFreqSize) || 8;
         this.phashMinorThreshold = Number(config.vision?.phashMinorThreshold) || 10;
         this.cooldownMs = Number(config.vision?.cooldownMs) || 30 * 1000;
-        this.debugLogs = config.vision?.debugLogs === true;
         this.noChangeMessage = '用户当前保持上个截图周期的状态';
         this.promptFilePath = path.resolve(__dirname, 'vison_prompt.md');
-        this.defaultVisionPrompt = '请详细分析这张屏幕截图。请注意：屏幕上可能有一个二次元美少女角色（Live2D模型），请完全忽略她，专注于她背后的应用窗口和内容。请描述：1. 当前打开的窗口和应用程序名称。2. 屏幕上显示的具体内容（例如：代码段、正在编辑的文档、浏览的网页内容、观看的视频画面等）。3. 用户的活动意图（例如：正在写代码、正在看番剧、正在搜索资料、正在聊天等）。请尽可能详细和精确。';
+        this.stateFilePath = String(config.vision?.stateFilePath || '').trim();
+        this.stateHistoryLimit = Math.max(10, Number(config.vision?.stateHistoryLimit) || 120);
+        this.stateCacheLoaded = false;
+        this.stateCache = { latest: null, history: [] };
+        this.persistTimer = null;
+        this.persistInFlight = false;
+        this.persistPending = false;
+        this.defaultVisionPrompt = [
+            '你是桌面状态识别器。忽略 Live2D 角色与气泡，仅依据可见屏幕信息判断用户状态。',
+            '只输出一个 JSON 对象，不要输出其它文本。字段：',
+            '{',
+            '  "screen_summary": "一句话描述当前界面核心内容",',
+            '  "user_activity": "用户当前动作（动词短语）",',
+            '  "intent": "用户短期目标",',
+            '  "labels": ["工作|学习|娱乐|沟通|搜索|摸鱼|待机"],',
+            '  "confidence": 0.0',
+            '}'
+        ].join('\n');
     }
 
     debugLog(message) {
-        if (!this.debugLogs) return;
-        console.log(message);
+        void message;
     }
 
     getVisionPrompt() {
@@ -119,7 +136,150 @@ class VisionService {
         return diff;
     }
 
-    async analyzeScreen(capturePayload) {
+    parseVisionJson(rawText) {
+        const raw = String(rawText || '').trim();
+        if (!raw) return null;
+
+        const jsonStr = extractFirstJsonObject(raw);
+        if (!jsonStr) return null;
+
+        try {
+            const parsed = JSON.parse(jsonStr);
+            if (!parsed || typeof parsed !== 'object') return null;
+            return {
+                screenSummary: String(parsed.screen_summary || '').trim(),
+                userActivity: String(parsed.user_activity || '').trim(),
+                intent: String(parsed.intent || '').trim(),
+                labels: Array.isArray(parsed.labels)
+                    ? parsed.labels.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 2)
+                    : [],
+                confidence: Number.isFinite(Number(parsed.confidence))
+                    ? Math.max(0, Math.min(1, Number(parsed.confidence)))
+                    : null
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    normalizeVisionOutput(parsed, fallbackText) {
+        if (!parsed) {
+            const fallback = String(fallbackText || '').replace(/\s+/g, ' ').trim();
+            return fallback || '当前屏幕状态无法可靠识别';
+        }
+
+        const labels = parsed.labels.length ? parsed.labels.join('/') : '未分类';
+        const confidence = parsed.confidence === null
+            ? '未知'
+            : `${Math.round(parsed.confidence * 100)}%`;
+        return [
+            `状态标签：${labels}`,
+            `用户行为：${parsed.userActivity || '未识别'}`,
+            `界面内容：${parsed.screenSummary || '未识别'}`,
+            `意图判断：${parsed.intent || '未识别'}`,
+            `置信度：${confidence}`
+        ].join('\n');
+    }
+
+    buildStateRecord({ analysis, capturedAt, activeWindowTitle, source }) {
+        return {
+            timestamp: Date.now(),
+            capturedAt: Number(capturedAt) || Date.now(),
+            activeWindowTitle: String(activeWindowTitle || ''),
+            analysis: String(analysis || '').trim(),
+            source: String(source || 'unknown')
+        };
+    }
+
+    readStateFile() {
+        if (this.stateCacheLoaded) return this.stateCache;
+        this.stateCacheLoaded = true;
+
+        if (!this.stateFilePath) {
+            this.stateCache = { latest: null, history: [] };
+            return this.stateCache;
+        }
+
+        try {
+            if (!fs.existsSync(this.stateFilePath)) {
+                this.stateCache = { latest: null, history: [] };
+                return this.stateCache;
+            }
+            const raw = fs.readFileSync(this.stateFilePath, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') {
+                this.stateCache = { latest: null, history: [] };
+                return this.stateCache;
+            }
+            this.stateCache = {
+                latest: parsed.latest && typeof parsed.latest === 'object' ? parsed.latest : null,
+                history: Array.isArray(parsed.history) ? parsed.history : []
+            };
+            return this.stateCache;
+        } catch (error) {
+            this.stateCache = { latest: null, history: [] };
+            return this.stateCache;
+        }
+    }
+
+    schedulePersistStateFile() {
+        if (!this.stateFilePath) return;
+        this.persistPending = true;
+        if (this.persistTimer) return;
+        this.persistTimer = setTimeout(() => {
+            this.persistTimer = null;
+            this.flushPersistStateFile().catch(() => {});
+        }, 0);
+    }
+
+    async flushPersistStateFile() {
+        if (!this.stateFilePath || this.persistInFlight || !this.persistPending) return;
+        this.persistInFlight = true;
+        this.persistPending = false;
+        try {
+            await fs.promises.mkdir(path.dirname(this.stateFilePath), { recursive: true });
+            const payload = JSON.stringify({
+                latest: this.stateCache.latest,
+                history: this.stateCache.history
+            });
+            await fs.promises.writeFile(this.stateFilePath, payload, 'utf8');
+        } catch (error) {
+            // Ignore persistence errors, do not block main perception flow.
+        } finally {
+            this.persistInFlight = false;
+            if (this.persistPending) {
+                this.flushPersistStateFile().catch(() => {});
+            }
+        }
+    }
+
+    persistStateRecord(record) {
+        const current = this.readStateFile();
+        const history = [...current.history, record].slice(-this.stateHistoryLimit);
+        this.stateCache = {
+            latest: record,
+            history
+        };
+        this.schedulePersistStateFile();
+    }
+
+    getLatestState(maxAgeMs = 5000) {
+        const current = this.readStateFile();
+        const latest = current.latest;
+        if (!latest || typeof latest.timestamp !== 'number') return null;
+        if (Date.now() - latest.timestamp > maxAgeMs) return null;
+        return latest;
+    }
+
+    async callVisionModel(base64Image, prompt, options = {}) {
+        return llmService.chatWithImage(base64Image, prompt, {
+            model: options.model,
+            thinkingBudget: options.thinkingBudget,
+            maxOutputTokens: options.maxOutputTokens
+        });
+    }
+
+    async analyzeScreen(capturePayload, options = {}) {
         const base64Image = typeof capturePayload === 'string'
             ? capturePayload
             : capturePayload?.base64Image;
@@ -134,6 +294,7 @@ class VisionService {
             return this.noChangeMessage;
         }
 
+        const bypassAdmission = options?.bypassAdmission === true;
         this.debugLog('VisionService: Analyzing screen...');
         const currentHash = await this.computePHash(base64Image);
 
@@ -141,14 +302,19 @@ class VisionService {
         const windowChanged = hasLastWindow && activeWindowTitle && activeWindowTitle !== this.lastWindowTitle;
         this.lastWindowTitle = activeWindowTitle || this.lastWindowTitle;
 
-        if (!this.lastAiHash || !currentHash || windowChanged) {
+        if (bypassAdmission || !this.lastAiHash || !currentHash || windowChanged) {
             if (windowChanged) {
                 this.debugLog(`VisionService: Active window changed: "${activeWindowTitle}"`);
             }
             this.lastAiHash = currentHash;
             this.lastAiAt = now;
             const prompt = this.getVisionPrompt();
-            return await llmService.chatWithImage(base64Image, prompt);
+            const raw = await this.callVisionModel(base64Image, prompt, {
+                model: config.llm?.visionModel,
+                thinkingBudget: Number(config.llm?.visionThinkingBudget) || 2048,
+                maxOutputTokens: Number(config.llm?.visionMaxOutputTokens) || 240
+            });
+            return this.normalizeVisionOutput(this.parseVisionJson(raw), raw);
         }
 
         const diff = this.hammingDistance(this.lastAiHash, currentHash);
@@ -166,8 +332,29 @@ class VisionService {
         this.lastAiHash = currentHash;
         this.lastAiAt = now;
         const prompt = this.getVisionPrompt();
-        return await llmService.chatWithImage(base64Image, prompt);
+        const raw = await this.callVisionModel(base64Image, prompt, {
+            model: config.llm?.visionModel,
+            thinkingBudget: Number(config.llm?.visionThinkingBudget) || 2048,
+            maxOutputTokens: Number(config.llm?.visionMaxOutputTokens) || 240
+        });
+        return this.normalizeVisionOutput(this.parseVisionJson(raw), raw);
+    }
+
+    async analyzeAndPersist(capturePayload, options = {}) {
+        const analysis = await this.analyzeScreen(capturePayload, options);
+        const record = this.buildStateRecord({
+            analysis,
+            capturedAt: capturePayload?.capturedAt,
+            activeWindowTitle: capturePayload?.activeWindowTitle,
+            source: options?.source || 'unknown'
+        });
+        this.persistStateRecord(record);
+        return {
+            analysis,
+            record
+        };
     }
 }
 
 module.exports = new VisionService();
+

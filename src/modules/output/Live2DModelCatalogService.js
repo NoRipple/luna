@@ -1,3 +1,4 @@
+/* 主要职责：管理可用 Live2D 模型目录，负责模型发现、描述构建和目标模型解析。 */
 const fs = require('fs');
 const path = require('path');
 const config = require('../../config/runtimeConfig');
@@ -105,3 +106,4 @@ class Live2DModelCatalogService {
 }
 
 module.exports = new Live2DModelCatalogService();
+

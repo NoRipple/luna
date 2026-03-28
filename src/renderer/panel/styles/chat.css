@@ -1,0 +1,423 @@
+/* 主要职责：定义中心对话区域的头部、消息流与输入框样式。 */
+.chat-surface {
+    padding: 18px 20px 16px;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 14px;
+}
+
+.chat-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.assistant-chip {
+    width: 42px;
+    height: 42px;
+    border-radius: 999px;
+    background: rgba(91, 80, 63, 0.22);
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+}
+
+.chat-header-copy {
+    flex: 1;
+    min-width: 0;
+}
+
+.chat-header-copy h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+
+.chat-header-copy p,
+.composer-meta {
+    margin: 4px 0 0;
+    color: var(--panel-subtle);
+    font-size: 13px;
+}
+
+.chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.model-pill,
+.header-dot-button {
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.78);
+    color: var(--panel-subtle);
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+.chat-view-toggle {
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--panel-subtle);
+    padding: 8px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.chat-view-toggle[data-mode='raw'] {
+    background: rgba(106, 92, 74, 0.16);
+    color: #5b503f;
+}
+
+.header-dot-button {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 12px;
+}
+
+.chat-stream {
+    min-height: 0;
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 18px;
+    padding-right: 6px;
+}
+
+.chat-stream[data-view='raw'] {
+    gap: 10px;
+}
+
+.chat-message {
+    display: grid;
+    gap: 8px;
+}
+
+.chat-message.agent {
+    justify-items: start;
+}
+
+.chat-message.user {
+    justify-items: end;
+}
+
+.message-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    max-width: 76%;
+}
+
+.chat-message.user .message-row {
+    flex-direction: row-reverse;
+}
+
+.message-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    background: rgba(91, 80, 63, 0.2);
+    display: grid;
+    place-items: center;
+    color: var(--panel-subtle);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.message-bubble {
+    border-radius: 22px;
+    background: var(--panel-surface-soft);
+    border: 1px solid rgba(102, 89, 72, 0.08);
+    padding: 14px 18px;
+    font-size: 14px;
+    line-height: 1.72;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.chat-message.user .message-bubble {
+    background: var(--panel-navy-soft);
+    color: rgba(255, 247, 237, 0.96);
+}
+
+.raw-message {
+    gap: 4px;
+}
+
+.raw-message-shell {
+    width: min(100%, 1100px);
+    border: 1px solid rgba(102, 89, 72, 0.12);
+    border-left-width: 3px;
+    border-radius: 10px;
+    padding: 6px 10px 8px;
+    background: rgba(255, 252, 247, 0.92);
+}
+
+.raw-message-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+
+.raw-index {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    color: #7a6d5d;
+}
+
+.raw-role-pill {
+    border: 1px solid rgba(102, 89, 72, 0.25);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 10px;
+    color: #5c5244;
+    background: rgba(255, 255, 255, 0.9);
+}
+
+.raw-role-pill.muted {
+    color: #7e7466;
+    border-color: rgba(102, 89, 72, 0.14);
+    background: rgba(255, 255, 255, 0.65);
+}
+
+.raw-message-body {
+    display: grid;
+    gap: 6px;
+}
+
+.raw-segment-compact {
+    display: grid;
+    gap: 4px;
+}
+
+.raw-inline-label {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 10px;
+    color: #807465;
+    letter-spacing: 0.02em;
+}
+
+.raw-inline-meta {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    color: #6f6455;
+}
+
+.raw-segment-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 6px;
+    cursor: pointer;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    color: #645849;
+    background: rgba(245, 238, 227, 0.72);
+    border: 1px solid rgba(102, 89, 72, 0.15);
+    border-radius: 8px;
+}
+
+.raw-segment-summary span:last-child {
+    color: #8a7f71;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70%;
+}
+
+.raw-toolcalls-content {
+    margin-top: 4px;
+    padding-left: 4px;
+}
+
+.raw-text-block {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+.raw-prose-block {
+    margin: 0;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: #473d31;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.raw-code-block {
+    margin: 0;
+    border: 1px solid rgba(102, 89, 72, 0.16);
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.74);
+}
+
+.raw-code-block figcaption {
+    padding: 3px 8px;
+    font-size: 10px;
+    color: #7d7265;
+    border-bottom: 1px solid rgba(102, 89, 72, 0.12);
+    font-family: Consolas, "Courier New", monospace;
+}
+
+.raw-code-pre {
+    margin: 0;
+    padding: 8px;
+    white-space: pre;
+    overflow-x: auto;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    line-height: 1.38;
+    color: #3f362c;
+}
+
+.tag-fold {
+    border: 1px solid rgba(102, 89, 72, 0.2);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.65);
+    margin-bottom: 4px;
+    overflow: hidden;
+}
+
+.tag-fold:last-child {
+    margin-bottom: 0;
+}
+
+.tag-fold-summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 4px 7px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    color: #6a5c4a;
+    background: rgba(241, 234, 223, 0.8);
+}
+
+.tag-fold-name {
+    color: #5e5346;
+    flex-shrink: 0;
+}
+
+.tag-fold-preview {
+    color: #8c8172;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70%;
+}
+
+.tag-fold-summary::-webkit-details-marker {
+    display: none;
+}
+
+.tag-fold-body {
+    padding: 5px 7px 7px;
+}
+
+.raw-role-system .raw-message-shell {
+    border-left-color: rgba(125, 116, 102, 0.7);
+    background: rgba(245, 239, 229, 0.95);
+}
+
+.raw-role-user .raw-message-shell {
+    border-left-color: rgba(89, 116, 154, 0.72);
+    background: rgba(230, 238, 248, 0.92);
+}
+
+.raw-role-assistant .raw-message-shell {
+    border-left-color: rgba(142, 105, 73, 0.74);
+    background: rgba(243, 235, 225, 0.94);
+}
+
+.raw-role-tool .raw-message-shell {
+    border-left-color: rgba(92, 137, 96, 0.74);
+    background: rgba(236, 244, 236, 0.94);
+}
+
+.message-time {
+    color: #b3aa9e;
+    font-size: 12px;
+    padding: 0 8px;
+}
+
+.composer-shell {
+    display: grid;
+    gap: 10px;
+}
+
+.composer-frame {
+    min-height: 70px;
+    border-radius: 22px;
+    border: 1px solid rgba(103, 90, 71, 0.1);
+    background: #fbf7f1;
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    padding: 14px 16px;
+}
+
+#chat-input {
+    flex: 1;
+    min-height: 40px;
+    max-height: 120px;
+    border: none;
+    outline: none;
+    resize: none;
+    background: transparent;
+    color: var(--panel-ink);
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+#chat-input::placeholder {
+    color: #b6aea3;
+}
+
+.composer-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.composer-icon,
+.composer-send {
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(223, 218, 209, 0.7);
+    color: var(--panel-subtle);
+    display: grid;
+    place-items: center;
+}
+
+.composer-send {
+    background: rgba(227, 220, 208, 0.96);
+    color: #7b7267;
+}
+
+.composer-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+}

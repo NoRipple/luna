@@ -1,3 +1,4 @@
+/* 主要职责：提供模型输出中的 JSON 提取能力，服务于回复解析和格式修复流程。 */
 function extractFirstJsonObject(text) {
     const source = String(text || '').trim();
     if (!source) return '';
@@ -43,3 +44,4 @@ function extractFirstJsonObject(text) {
 module.exports = {
     extractFirstJsonObject
 };
+

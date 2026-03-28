@@ -1,3 +1,4 @@
+/* 主要职责：负责桌宠覆盖层渲染逻辑，包括 Live2D 展示、语音播放和前端交互。 */
 function logError(msg) {
             console.error(msg);
             const el = document.getElementById('error-log');
@@ -127,6 +128,26 @@ function logError(msg) {
             bubble.style.top = `${selected.top}px`;
         }
 
+        function positionChatToggleNearModel(model) {
+            const toggle = document.getElementById('chat-toggle');
+            if (!toggle || !model) return;
+
+            const bounds = model.getBounds();
+            const viewportPadding = 12;
+            const toggleSize = Math.max(toggle.offsetWidth || 64, toggle.offsetHeight || 64);
+            const preferredLeft = bounds.x + bounds.width - toggleSize * 0.45;
+            const preferredTop = bounds.y + Math.max(10, bounds.height * 0.14);
+            const maxLeft = window.innerWidth - toggleSize - viewportPadding;
+            const maxTop = window.innerHeight - toggleSize - viewportPadding;
+            const clampedLeft = Math.max(viewportPadding, Math.min(preferredLeft, maxLeft));
+            const clampedTop = Math.max(viewportPadding, Math.min(preferredTop, maxTop));
+
+            toggle.style.left = `${clampedLeft}px`;
+            toggle.style.top = `${clampedTop}px`;
+            toggle.style.right = 'auto';
+            toggle.style.bottom = 'auto';
+        }
+
         window.onload = async () => {
             try {
                 if (!window.Live2DCubismCore) {
@@ -167,22 +188,38 @@ function logError(msg) {
 
                 let model = null;
                 let isModelScaled = false;
+                let baseModelScale = 1;
 
                 window.isModelHovered = false;
                 window.isMouseDown = false;
                 window.isDragging = false;
                 window.isPanelOpen = false;
                 window.isUiHovered = false;
+                let lastIgnoreMouseEvents = null;
 
                 const syncMouseIgnoreState = () => {
-                    if (window.isPanelOpen || window.isUiHovered || window.isDragging || window.isMouseDown || window.isModelHovered) {
-                        window.electronAPI.setIgnoreMouseEvents(false);
-                    } else {
+                    if (!window.electronAPI?.setIgnoreMouseEvents) return;
+                    const shouldIgnore = !(
+                        window.isPanelOpen || window.isUiHovered || window.isDragging || window.isMouseDown || window.isModelHovered
+                    );
+                    if (lastIgnoreMouseEvents === shouldIgnore) return;
+                    if (shouldIgnore) {
                         window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+                    } else {
+                        window.electronAPI.setIgnoreMouseEvents(false);
                     }
+                    lastIgnoreMouseEvents = shouldIgnore;
                 };
 
                 const getCurrentModel = () => model;
+                const setPanelOpen = (open) => {
+                    window.isPanelOpen = !!open;
+                    const toggleButton = document.getElementById('chat-toggle');
+                    if (toggleButton) {
+                        toggleButton.dataset.open = window.isPanelOpen ? 'true' : 'false';
+                        toggleButton.setAttribute('aria-expanded', window.isPanelOpen ? 'true' : 'false');
+                    }
+                };
 
                 const resizeModel = () => {
                     const currentModel = getCurrentModel();
@@ -191,13 +228,14 @@ function logError(msg) {
                     if (!isModelScaled) {
                         const scaleX = (innerWidth * 0.8) / currentModel.width;
                         const scaleY = (innerHeight * 1.5) / currentModel.height;
-                        const scale = Math.max(scaleX, scaleY) * 0.8;
-                        currentModel.scale.set(scale);
+                        baseModelScale = Math.max(scaleX, scaleY) * 0.8;
                         isModelScaled = true;
                     }
 
+                    currentModel.scale.set(baseModelScale);
                     currentModel.x = (innerWidth - currentModel.width) / 2;
                     currentModel.y = innerHeight * 0.1;
+                    positionChatToggleNearModel(currentModel);
                 };
 
                 const bindModelHoverEvents = (targetModel) => {
@@ -228,8 +266,10 @@ function logError(msg) {
                     live2dRuntime.availableMotions = new Set(live2dConfig?.motions || []);
                     live2dRuntime.fallbackMotionName = live2dConfig?.fallbackMotion || 'idle';
                 };
+                let modelMountVersion = 0;
 
                 const mountModelByConfig = async (live2dConfig) => {
+                    const mountVersion = ++modelMountVersion;
                     applyLive2DConfig(live2dConfig);
                     const modelPath =
                         live2dConfig?.rendererModelPath ||
@@ -237,6 +277,10 @@ function logError(msg) {
 
                     console.log('Loading model from:', modelPath);
                     const nextModel = await Live2DModel.from(modelPath);
+                    if (mountVersion !== modelMountVersion) {
+                        destroyModelIfNeeded(nextModel);
+                        return;
+                    }
                     disableLive2DMotionAudio(nextModel);
                     bindModelHoverEvents(nextModel);
 
@@ -258,7 +302,7 @@ function logError(msg) {
                         console.log('Motion Groups:', nextModel.internalModel.motionManager.motionGroups);
                         setTimeout(() => {
                             const currentModel = getCurrentModel();
-                            if (!currentModel || currentModel !== nextModel) return;
+                            if (!currentModel || currentModel !== nextModel || mountVersion !== modelMountVersion) return;
                             try {
                                 playSafeMotion(currentModel, live2dRuntime.fallbackMotionName);
                             } catch (error) {
@@ -304,12 +348,8 @@ function logError(msg) {
                     if (msg.text) {
                         const bubble = document.getElementById('chat-bubble');
                         bubble.textContent = msg.text;
-                        if (!window.isPanelOpen) {
-                            bubble.style.display = 'block';
-                            positionBubbleNearModel(currentModel);
-                        } else {
-                            bubble.style.display = 'none';
-                        }
+                        bubble.style.display = 'block';
+                        positionBubbleNearModel(currentModel);
                     }
 
                     if (msg.motion) {
@@ -338,10 +378,32 @@ function logError(msg) {
                     });
                 }
 
+                if (window.electronAPI && window.electronAPI.onPanelVisibilityChanged) {
+                    window.electronAPI.onPanelVisibilityChanged((payload) => {
+                        setPanelOpen(Boolean(payload?.open));
+                        const bubble = document.getElementById('chat-bubble');
+                        if (!bubble) {
+                            syncMouseIgnoreState();
+                            return;
+                        }
+                        if (bubble.textContent) {
+                            const currentModel = getCurrentModel();
+                            if (currentModel) {
+                                positionBubbleNearModel(currentModel);
+                                positionChatToggleNearModel(currentModel);
+                            }
+                            bubble.style.display = 'block';
+                        } else {
+                            bubble.style.display = 'none';
+                        }
+                        syncMouseIgnoreState();
+                    });
+                }
+
                 initVTubeStudioAdapter(getCurrentModel, app);
                 initExternalControl(getCurrentModel);
                 initWindowControl();
-                initChatEntry(syncMouseIgnoreState);
+                initChatEntry(syncMouseIgnoreState, setPanelOpen);
                 await reloadLive2DModel();
 
             } catch (e) {
@@ -448,10 +510,11 @@ function logError(msg) {
                 mouseY = (e.clientY / height) * 2 - 1;
             };
 
-            window.addEventListener('mousemove', updateMouseTracking, { passive: true });
-            window.addEventListener('pointermove', updateMouseTracking, { passive: true });
-            document.addEventListener('mousemove', updateMouseTracking, { passive: true });
-            document.addEventListener('pointermove', updateMouseTracking, { passive: true });
+            if ('onpointermove' in window) {
+                window.addEventListener('pointermove', updateMouseTracking, { passive: true });
+            } else {
+                window.addEventListener('mousemove', updateMouseTracking, { passive: true });
+            }
 
             if (window.electronAPI && window.electronAPI.onGlobalMouseMove) {
                 window.electronAPI.onGlobalMouseMove((payload) => {
@@ -570,16 +633,17 @@ function logError(msg) {
              document.dispatchEvent(new CustomEvent('drag-end'));
         });
 
-        window.addEventListener('blur', () => {
-             window.isMouseDown = false;
-             window.isDragging = false;
-             document.dispatchEvent(new CustomEvent('drag-end'));
-        });
+                window.addEventListener('blur', () => {
+                     isLeftCtrlPressed = false;
+                     window.isMouseDown = false;
+                     window.isDragging = false;
+                     document.dispatchEvent(new CustomEvent('drag-end'));
+                });
 
 
     }
 
-        function initChatEntry(syncMouseIgnoreState) {
+        function initChatEntry(syncMouseIgnoreState, setPanelOpen) {
             const toggleButton = document.getElementById('chat-toggle');
             if (!toggleButton) return;
 
@@ -597,9 +661,9 @@ function logError(msg) {
                 }
             };
 
-            document.addEventListener('mousemove', (event) => {
+            document.addEventListener('pointermove', (event) => {
                 updateUiHoverByPoint(event.clientX, event.clientY);
-            });
+            }, { passive: true });
 
             if (window.electronAPI && window.electronAPI.onGlobalMouseMove) {
                 window.electronAPI.onGlobalMouseMove((payload) => {
@@ -625,16 +689,23 @@ function logError(msg) {
             });
 
             toggleButton.addEventListener('click', () => {
+                const nextOpen = !window.isPanelOpen;
+                setPanelOpen(nextOpen);
+                syncMouseIgnoreState();
+                if (window.electronAPI?.toggleChatPanel) {
+                    window.electronAPI.toggleChatPanel();
+                    return;
+                }
                 if (window.electronAPI && window.electronAPI.openChatPanel) {
-                    window.electronAPI.openChatPanel();
+                    if (nextOpen) {
+                        window.electronAPI.openChatPanel();
+                    }
                 }
             });
 
             toggleButton.style.display = 'flex';
             toggleButton.setAttribute('aria-label', 'Chat');
-            toggleButton.setAttribute('aria-expanded', 'false');
-            toggleButton.dataset.open = 'false';
-            window.isPanelOpen = false;
+            setPanelOpen(false);
             window.isUiHovered = false;
             syncMouseIgnoreState();
         }
@@ -688,11 +759,16 @@ function logError(msg) {
         let queue = [];
         let isSourceOpen = false;
         let activeTtsJobId = null;
+        let mediaSourceObjectUrl = '';
 
         function resetMediaSource() {
             if (ttsAudio) {
                 ttsAudio.pause();
                 ttsAudio.currentTime = 0;
+            }
+            if (mediaSourceObjectUrl) {
+                URL.revokeObjectURL(mediaSourceObjectUrl);
+                mediaSourceObjectUrl = '';
             }
             if (mediaSource && mediaSource.readyState === 'open') {
                 try {
@@ -701,7 +777,9 @@ function logError(msg) {
             }
             
             mediaSource = new MediaSource();
-            ttsAudio.src = URL.createObjectURL(mediaSource);
+            mediaSourceObjectUrl = URL.createObjectURL(mediaSource);
+            ttsAudio.src = mediaSourceObjectUrl;
+            sourceBuffer = null;
             queue = [];
             isSourceOpen = false;
             
@@ -736,6 +814,13 @@ function logError(msg) {
 
         // Initialize
         resetMediaSource();
+
+        window.addEventListener('beforeunload', () => {
+            if (mediaSourceObjectUrl) {
+                URL.revokeObjectURL(mediaSourceObjectUrl);
+                mediaSourceObjectUrl = '';
+            }
+        });
 
         function hexToUint8Array(hex) {
             if (!hex) return new Uint8Array(0);
@@ -794,3 +879,4 @@ function logError(msg) {
                 }
             });
         }
+

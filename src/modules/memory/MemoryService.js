@@ -1,3 +1,4 @@
+/* 主要职责：提供项目级记忆能力，负责持久化记忆的读取、写入和查询。 */
 class MemoryService {
     constructor() {
         this.shortTermMemory = [];
@@ -21,3 +22,4 @@ class MemoryService {
 }
 
 module.exports = new MemoryService();
+

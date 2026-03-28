@@ -1,0 +1,249 @@
+/* 主要职责：定义右侧 AI 状态与记忆系统卡片样式。 */
+.insight-surface {
+    padding: 18px;
+    display: grid;
+    grid-template-rows: auto auto auto auto minmax(0, 1fr);
+    gap: 16px;
+    overflow: hidden;
+}
+
+.insight-header,
+.insight-block-head,
+.memory-topbar,
+.memory-footnote {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.insight-header h2,
+.memory-core strong {
+    margin: 0;
+    font-size: 16px;
+    letter-spacing: 0.01em;
+}
+
+.live-inline,
+.memory-badge {
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.78);
+    color: var(--panel-subtle);
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+.insight-hero {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    min-height: 64px;
+    max-height: 64px;
+    overflow: hidden;
+}
+
+.insight-hero > div {
+    min-width: 0;
+}
+
+#state-session-label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#state-runtime-label {
+    margin: 0;
+    display: -webkit-box;
+    overflow: hidden;
+    line-height: 1.35;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.insight-avatar {
+    width: 46px;
+    height: 46px;
+    border-radius: 999px;
+    background: rgba(91, 80, 63, 0.18);
+    display: grid;
+    place-items: center;
+    color: var(--panel-subtle);
+}
+
+.insight-hero p,
+.state-inline-meta,
+.perception-item-time,
+.perception-item-state,
+.perception-item-detail,
+.memory-topbar,
+.memory-footnote,
+.live-inline {
+    color: var(--panel-subtle);
+    font-size: 12px;
+}
+
+.insight-block {
+    display: grid;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(103, 90, 71, 0.08);
+}
+
+.insight-block-fixed {
+    min-height: 108px;
+    max-height: 108px;
+    align-content: start;
+    overflow: hidden;
+}
+
+.insight-block-session {
+    grid-template-rows: auto 8px 1fr;
+}
+
+.insight-block-runtime {
+    grid-template-rows: auto auto 1fr;
+}
+
+.insight-block-head.stacked {
+    align-items: flex-start;
+}
+
+.insight-block-head strong,
+.state-inline-meta strong {
+    max-width: 58%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+}
+
+.state-progress-track {
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(207, 199, 186, 0.76);
+    overflow: hidden;
+}
+
+.state-progress-fill {
+    display: block;
+    height: 100%;
+    width: 82%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #9b8d76, #7fbc91);
+}
+
+.state-inline-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+}
+
+.insight-block-runtime .state-inline-meta:first-of-type strong {
+    display: -webkit-box;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: initial;
+    white-space: normal;
+    text-align: right;
+    line-height: 1.35;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.perception-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    overflow: hidden;
+}
+
+.perception-item {
+    border-radius: 16px;
+    border: 1px solid rgba(103, 90, 71, 0.08);
+    background: rgba(255, 255, 255, 0.88);
+    padding: 12px;
+    display: grid;
+    gap: 6px;
+    min-height: 0;
+    align-content: start;
+}
+
+.perception-item-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+}
+
+.memory-surface {
+    background: linear-gradient(180deg, rgba(35, 36, 43, 0.98), rgba(24, 25, 31, 0.98));
+    color: rgba(255, 248, 240, 0.92);
+    padding: 16px 18px;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 14px;
+}
+
+.memory-badge {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 248, 240, 0.5);
+}
+
+.memory-core {
+    display: grid;
+    place-items: center;
+    text-align: center;
+    gap: 12px;
+}
+
+.memory-orb {
+    width: 74px;
+    height: 74px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: grid;
+    place-items: center;
+    font-size: 30px;
+}
+
+#memory-summary,
+#memory-counts {
+    color: rgba(255, 248, 240, 0.58);
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+.perception-item > div:nth-child(2) {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.perception-item-detail {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.memory-help {
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 248, 240, 0.72);
+    display: grid;
+    place-items: center;
+}

@@ -1,3 +1,4 @@
+/* 主要职责：维护 Agent 的 todo 状态、校验约束和订阅通知，是任务计划的状态容器。 */
 class TodoManager {
     constructor() {
         this.items = [];

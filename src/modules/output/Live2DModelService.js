@@ -1,3 +1,4 @@
+/* 主要职责：管理当前生效的 Live2D 模型能力，负责动作表情约束、模型路径和运行时切换。 */
 const fs = require('fs');
 const path = require('path');
 const config = require('../../config/runtimeConfig');
@@ -413,3 +414,4 @@ class Live2DModelService {
 }
 
 module.exports = new Live2DModelService();
+

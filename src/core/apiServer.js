@@ -1,7 +1,9 @@
+/* 主要职责：提供轻量 HTTP 控制接口，用于外部控制命令转发和基础调试访问。 */
 const http = require('http');
+const config = require('../config/runtimeConfig');
 
 function startApiServer({ llmService, getOverlayWindow }) {
-    const port = 3001;
+    const port = Number(config.api?.port) || 3001;
     const server = http.createServer((req, res) => {
         // 设置 CORS，允许任何来源调用（方便测试）
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -73,3 +75,4 @@ function startApiServer({ llmService, getOverlayWindow }) {
 module.exports = {
     startApiServer
 };
+

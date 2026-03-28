@@ -1,91 +1,166 @@
 <!DOCTYPE html>
+<!-- 主要职责：定义参考 Figma 工作台设计的聊天面板结构，仅保留导航、对话、感知信息、行为追踪和记忆系统区域。 -->
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700&family=Zen+Old+Mincho:wght@500;700&display=swap" rel="stylesheet">
+    <title>Companion Panel</title>
     <link rel="stylesheet" href="./styles.css">
-    <link rel="stylesheet" href="./panel.css">
+    <link rel="stylesheet" href="./panel/styles/tokens.css">
+    <link rel="stylesheet" href="./panel/styles/layout.css">
+    <link rel="stylesheet" href="./panel/styles/chat.css">
+    <link rel="stylesheet" href="./panel/styles/sidebar.css">
+    <link rel="stylesheet" href="./panel/styles/timeline.css">
 </head>
 <body class="panel-window">
-    <section id="chat-panel" class="open" aria-hidden="false">
-        <header id="chat-panel-header">
-            <div class="panel-title-group">
-                <span class="panel-kicker">Assistant Panel</span>
-                <strong>对话面板</strong>
-                <p id="chat-panel-substatus">当前历史与任务状态会在这里更新。</p>
-            </div>
-            <div class="panel-status-cluster">
-                <span class="panel-badge" id="chat-status">空闲</span>
-            </div>
-        </header>
-
-        <nav id="panel-nav" aria-label="panel views">
-            <button id="panel-tab-chat" class="panel-tab active" type="button" data-view="chat">对话</button>
-            <button id="panel-tab-live2d" class="panel-tab" type="button" data-view="live2d">形象管理</button>
-        </nav>
-
-        <section id="panel-view-chat" class="panel-view active" data-view="chat">
-            <article id="perception-live-card" class="realtime-perception">
-                <div class="realtime-header">
-                    <span class="realtime-kicker">Realtime Perception</span>
-                    <span id="perception-live-time" class="realtime-time">--:--</span>
-                </div>
-                <div class="realtime-main">
-                    <span id="perception-live-status" class="realtime-status">空闲</span>
-                    <p id="perception-live-summary" class="realtime-summary">暂无感知结果</p>
-                </div>
-                <pre id="perception-live-detail" class="realtime-detail"></pre>
-                <span id="perception-live-tip" class="realtime-tip">点击展开详情</span>
-            </article>
-
-            <article id="todo-board-card" class="todo-board">
-                <div class="todo-board-header">
-                    <span class="todo-board-kicker">Execution Plan</span>
-                    <span id="todo-board-time" class="todo-board-time">--:--</span>
-                </div>
-                <p id="todo-board-summary" class="todo-board-summary">暂无执行计划</p>
-                <div id="todo-board-list" class="todo-board-list"></div>
-            </article>
-
-            <div id="chat-history"></div>
-
-            <div id="chat-input-area">
-                <label class="input-caption" for="chat-input">发送指令</label>
-                <textarea id="chat-input" placeholder="输入你的命令..." rows="3"></textarea>
-                <div class="input-actions">
-                    <span class="input-tip">Enter 发送，Shift + Enter 换行</span>
-                    <button id="chat-send" type="button">发送</button>
-                </div>
-            </div>
-        </section>
-
-        <section id="panel-view-live2d" class="panel-view" data-view="live2d">
-            <div id="live2d-manage-area">
-                <label class="input-caption" for="live2d-model-select">当前形象</label>
-                <select id="live2d-model-select"></select>
-                <div class="live2d-manage-actions">
-                    <button id="live2d-switch" type="button">切换形象</button>
-                    <span id="live2d-switch-status">请选择形象并切换</span>
+    <div id="panel-shell">
+        <aside class="app-rail" aria-label="导航侧栏">
+            <div class="app-brand">
+                <div class="app-brand-mark">✦</div>
+                <div class="app-brand-copy">
+                    <strong>Agent OS</strong>
+                    <span>Platinum</span>
                 </div>
             </div>
 
-            <div class="live2d-info-group">
-                <h4>动作列表</h4>
-                <div id="live2d-motions" class="live2d-pill-list"></div>
-            </div>
+            <div class="rail-section-label">功能模块</div>
+            <nav class="app-nav">
+                <button class="app-nav-item ghost" type="button" disabled>
+                    <span>更多模块</span>
+                    <span>等待扩展</span>
+                </button>
+            </nav>
 
-            <div class="live2d-info-group">
-                <h4>表情列表</h4>
-                <div id="live2d-expressions" class="live2d-pill-list"></div>
-            </div>
-        </section>
-    </section>
+            <button class="app-settings" type="button" disabled>
+                <span class="app-settings-icon">⚙</span>
+                <span>设置</span>
+            </button>
+        </aside>
+
+        <main class="workspace-grid">
+            <section class="main-column">
+                <section class="chat-surface">
+                    <header class="chat-header">
+                        <div class="assistant-chip">✦</div>
+                        <div class="chat-header-copy">
+                            <h1>Platinum Assistant</h1>
+                            <p>
+                                <span class="status-dot"></span>
+                                <span id="chat-status-meta">在线 · 等待响应</span>
+                            </p>
+                        </div>
+                        <div class="chat-header-actions">
+                            <span class="model-pill">GPT-4o</span>
+                            <button id="chat-view-toggle" class="chat-view-toggle" type="button">真实视野</button>
+                            <button class="header-dot-button" type="button" disabled>···</button>
+                        </div>
+                    </header>
+
+                    <div id="chat-history" class="chat-stream"></div>
+
+                    <footer class="composer-shell">
+                        <div class="composer-frame">
+                            <label class="sr-only" for="chat-input">发送消息</label>
+                            <textarea id="chat-input" placeholder="发送消息... (Enter 发送, Shift+Enter 换行)" rows="2"></textarea>
+                            <div class="composer-tools">
+                                <button class="composer-icon" type="button" disabled>☺</button>
+                                <button class="composer-icon" type="button" disabled>◌</button>
+                                <button id="chat-send" class="composer-send" type="button">➤</button>
+                            </div>
+                        </div>
+                        <div class="composer-meta">
+                            <span id="composer-runtime">当前会话</span>
+                            <span id="conversation-meta">0 条消息</span>
+                        </div>
+                    </footer>
+                </section>
+
+                <section class="trace-surface">
+                    <header class="trace-header">
+                        <div class="trace-header-copy">
+                            <h2>实时行为追踪</h2>
+                            <span class="trace-subtitle">统一主时间流 · 稳定展示近期工具与状态事件</span>
+                        </div>
+                        <div class="trace-header-meta">
+                            <span id="trace-duration">--</span>
+                            <span class="trace-live">
+                                <span class="status-dot soft"></span>
+                                LIVE
+                            </span>
+                        </div>
+                    </header>
+                    <div id="timeline-lanes" class="timeline-lanes"></div>
+                </section>
+            </section>
+
+            <aside class="side-column">
+                <section class="insight-surface">
+                    <header class="insight-header">
+                        <h2>AI 状态</h2>
+                        <span class="live-inline">
+                            <span class="status-dot soft"></span>
+                            实时
+                        </span>
+                    </header>
+
+                    <article class="insight-hero">
+                        <div class="insight-avatar">AI</div>
+                        <div>
+                            <strong id="state-session-label">会话空闲</strong>
+                            <p id="state-runtime-label">等待新的命令或自主轮次。</p>
+                        </div>
+                    </article>
+
+                    <section class="insight-block insight-block-fixed insight-block-session">
+                        <div class="insight-block-head">
+                            <span>会话状态</span>
+                            <strong id="state-session-value">空闲</strong>
+                        </div>
+                        <div class="state-progress-track">
+                            <span id="state-progress-fill" class="state-progress-fill"></span>
+                        </div>
+                    </section>
+
+                    <section class="insight-block insight-block-fixed insight-block-runtime">
+                        <div class="insight-block-head">
+                            <span>运行时状态</span>
+                            <strong id="state-runtime-value">等待中</strong>
+                        </div>
+                        <div class="state-inline-meta">
+                            <span>下次唤醒</span>
+                            <strong id="state-wake-value">未安排</strong>
+                        </div>
+                    </section>
+
+                    <section class="insight-block perception-block">
+                        <div class="insight-block-head stacked">
+                            <span>最近感知</span>
+                            <strong id="perception-live-time">--:--</strong>
+                        </div>
+                        <ul id="ai-perception-list" class="perception-list"></ul>
+                    </section>
+                </section>
+
+                <section class="memory-surface">
+                    <div class="memory-topbar">
+                        <span>AI 记忆系统</span>
+                        <span class="memory-badge">待命开发</span>
+                    </div>
+                    <div class="memory-core">
+                        <div class="memory-orb">✺</div>
+                        <strong>AI 记忆系统</strong>
+                        <p id="memory-summary">持久化记忆、跨会话上下文管理与语义关联能力。</p>
+                    </div>
+                    <div class="memory-footnote">
+                        <span id="memory-counts">最近感知 0 · 行为事件 0</span>
+                        <button class="memory-help" type="button" disabled>?</button>
+                    </div>
+                </section>
+            </aside>
+        </main>
+    </div>
 
     <div id="error-log"></div>
-    <script src="./panel.js"></script>
+    <script type="module" src="./panel/scripts/panelApp.js"></script>
 </body>
 </html>

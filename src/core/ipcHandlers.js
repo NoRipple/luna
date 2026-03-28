@@ -1,3 +1,6 @@
+/* 主要职责：集中注册主进程与渲染进程之间的 IPC 协议，收口窗口控制、聊天和模型切换入口。 */
+const config = require('../config/runtimeConfig');
+
 function registerIpcHandlers(deps) {
     const {
         ipcMain,
@@ -69,12 +72,44 @@ function registerIpcHandlers(deps) {
         createPanelWindow();
     });
 
+    ipcMain.on('toggle-chat-panel', () => {
+        const panelWindow = getPanelWindow();
+        if (!panelWindow || panelWindow.isDestroyed()) {
+            createPanelWindow();
+            return;
+        }
+        if (panelWindow.isVisible()) {
+            panelWindow.hide();
+            return;
+        }
+        panelWindow.show();
+        panelWindow.focus();
+    });
+
     ipcMain.on('tts-playback-ended', (_event, payload) => {
         onTtsPlaybackEnded(payload?.jobId);
     });
 
     ipcMain.handle('ui-history-snapshot', async () => {
         return buildUiPanelState();
+    });
+
+    ipcMain.handle('debug-flags', async () => {
+        return {
+            uiPerf: Boolean(config.debug?.uiPerf),
+            uiPerfSlowMs: Number(config.debug?.uiPerfSlowMs) || 32
+        };
+    });
+
+    ipcMain.on('ui-perf-log', (_event, payload) => {
+        if (!config.debug?.uiPerf) return;
+        try {
+            const type = String(payload?.type || 'event');
+            const json = JSON.stringify(payload || {});
+            console.log(`[UI PERF][renderer] type=${type} payload=${json}`);
+        } catch (error) {
+            console.log('[UI PERF][renderer] failed_to_serialize_payload');
+        }
     });
 
     ipcMain.handle('ui-send-command', async (_event, text) => {
@@ -196,3 +231,4 @@ function registerIpcHandlers(deps) {
 module.exports = {
     registerIpcHandlers
 };
+

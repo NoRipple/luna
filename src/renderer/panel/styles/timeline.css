@@ -1,0 +1,225 @@
+/* 主要职责：定义底部行为追踪区与时间轴泳道样式。 */
+.trace-surface {
+    padding: 14px 18px 16px;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
+}
+
+.trace-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.trace-header-copy {
+    display: grid;
+    gap: 8px;
+}
+
+.trace-header-copy h2 {
+    margin: 0;
+    font-size: 18px;
+    letter-spacing: 0.01em;
+}
+
+.trace-subtitle {
+    color: var(--panel-subtle);
+    font-size: 12px;
+}
+
+.trace-live {
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.78);
+    color: var(--panel-subtle);
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+.trace-header-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--panel-subtle);
+    font-size: 12px;
+}
+
+.timeline-lanes {
+    min-height: 0;
+    overflow: hidden;
+    display: block;
+    border: 1px solid rgba(103, 90, 71, 0.08);
+    border-radius: 18px;
+    background: rgba(255, 252, 247, 0.85);
+}
+
+.timeline-flow {
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+    padding: 14px;
+    contain: layout paint style;
+}
+
+.timeline-track-grid {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 8px;
+    min-height: 92px;
+}
+
+.timeline-track-lane {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: stretch;
+    gap: 6px;
+}
+
+.timeline-track-label {
+    color: var(--panel-ink);
+    font-size: 12px;
+    font-weight: 800;
+    display: grid;
+    place-items: center;
+    letter-spacing: 0.01em;
+    padding: 0 2px 0 0;
+}
+
+.timeline-track-row {
+    position: relative;
+    min-height: 72px;
+    border-radius: 14px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(247, 241, 232, 0.82)),
+        linear-gradient(90deg, rgba(154, 136, 111, 0.05), transparent 22%, transparent 78%, rgba(127, 188, 145, 0.05));
+    overflow: hidden;
+}
+
+.timeline-track-row::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    background: linear-gradient(90deg, rgba(103, 90, 71, 0.06), rgba(103, 90, 71, 0.18), rgba(103, 90, 71, 0.06));
+}
+
+.timeline-node {
+    position: absolute;
+    width: 0;
+    box-sizing: border-box;
+    min-height: 26px;
+    left: 0;
+    top: 50%;
+    transform: translate3d(0, -50%, 0);
+    border-radius: 10px;
+    border: 1px solid rgba(103, 90, 71, 0.1);
+    background: rgba(255, 255, 255, 0.96);
+    padding: 4px 6px;
+    display: block;
+    box-shadow: 0 6px 14px rgba(91, 72, 47, 0.08);
+    will-change: transform, opacity;
+    contain: layout paint style;
+    pointer-events: auto;
+    cursor: help;
+}
+
+.timeline-node[data-compact='true'] {
+    padding: 1px 2px;
+    border-radius: 6px;
+    min-height: 16px;
+}
+
+.timeline-node[data-kind='sleep'] {
+    min-height: 18px;
+    border-radius: 8px;
+    padding: 2px 4px;
+    box-shadow: 0 4px 10px rgba(91, 72, 47, 0.07);
+}
+
+.timeline-node-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    min-width: 0;
+}
+
+.timeline-node[data-kind='command'],
+.timeline-node[data-kind='command-running'],
+.timeline-node[data-kind='command-finish'],
+.timeline-node[data-kind='command-merge'] {
+    background: rgba(255, 249, 240, 0.98);
+}
+
+.timeline-node[data-kind='detect'],
+.timeline-node[data-kind='look'],
+.timeline-node[data-kind='speak'],
+.timeline-node[data-kind='sleep'],
+.timeline-node[data-kind='sleep-request'],
+.timeline-node[data-kind='todo'],
+.timeline-node[data-kind='panel-note'] {
+    background: rgba(244, 250, 246, 0.98);
+}
+
+.timeline-node[data-kind='context'],
+.timeline-node[data-kind='autonomous'],
+.timeline-node[data-kind='autonomous-running'],
+.timeline-node[data-kind='autonomous-finish'] {
+    background: rgba(245, 247, 252, 0.98);
+}
+
+.timeline-node[data-kind='tool'],
+.timeline-node[data-kind='memory'],
+.timeline-node[data-kind='main'] {
+    background: rgba(248, 244, 237, 0.98);
+}
+
+.timeline-node[data-status='error'] {
+    background: rgba(255, 244, 242, 0.98);
+}
+
+.timeline-node[data-faded='true'] {
+    opacity: 0.42;
+}
+
+.timeline-node-title {
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    user-select: none;
+    min-width: 0;
+}
+
+.timeline-node-meta {
+    margin-top: 0;
+    font-size: 10px;
+    color: var(--panel-subtle);
+    white-space: nowrap;
+    flex-shrink: 0;
+    pointer-events: none;
+    user-select: none;
+}
+
+.timeline-node[data-compact='true'] .timeline-node-title {
+    font-size: 10px;
+}
+
+.timeline-node[data-compact='true'] .timeline-node-meta {
+    font-size: 9px;
+}
+
+.timeline-flow-empty {
+    height: 100%;
+    min-height: 92px;
+    display: grid;
+    place-items: center;
+    color: var(--panel-subtle);
+    font-size: 13px;
+}

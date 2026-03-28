@@ -1,109 +1,42 @@
-const fs = require('fs');
-const path = require('path');
-const { spawn } = require('child_process');
+/* 主要职责：作为工具注册中心，负责装配所有工具定义、保存 runtime adapter，并统一执行工具调用。 */
 const live2dModelService = require('../output/Live2DModelService');
 const TodoManager = require('./TodoManager');
-
-const ALAS_DAILY_SCRIPT_PATH = 'D:\\WorkSpace\\ToolsCmds\\Start_MuMu_and_Alas2.bat';
+const { createRuntimeTools } = require('./runtimeTools');
+const { createSystemTools } = require('./systemTools');
+const { createTaskTools } = require('./taskTools');
 
 class CompanionToolRegistry {
     constructor() {
         this.todoManager = new TodoManager();
-        this.toolDefinitions = [
-            {
-                type: 'function',
-                function: {
-                    name: 'get_current_time',
-                    description: '当你需要知道当前日期、时间、星期或时区时使用。',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            timezone: {
-                                type: 'string',
-                                description: 'IANA 时区名称，例如 Asia/Hong_Kong。留空时使用系统本地时区。'
-                            }
-                        },
-                        required: []
-                    }
-                }
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'get_live2d_model_info',
-                    description: '查询当前 Live2D 模型的路径、可用动作、表情和默认回退动作。',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            include_motions: {
-                                type: 'boolean',
-                                description: '是否返回完整动作列表。默认 true。'
-                            },
-                            include_expressions: {
-                                type: 'boolean',
-                                description: '是否返回完整表情列表。默认 true。'
-                            }
-                        },
-                        required: []
-                    }
-                }
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'todo',
-                    description: '更新当前执行计划。适合多步命令任务，状态仅允许 pending、in_progress、completed。',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            items: {
-                                type: 'array',
-                                description: '完整的待办列表。',
-                                items: {
-                                    type: 'object',
-                                    properties: {
-                                        id: {
-                                            type: 'string',
-                                            description: '待办项标识符。'
-                                        },
-                                        text: {
-                                            type: 'string',
-                                            description: '待办项描述。'
-                                        },
-                                        status: {
-                                            type: 'string',
-                                            enum: ['pending', 'in_progress', 'completed'],
-                                            description: '待办项状态。'
-                                        }
-                                    },
-                                    required: ['id', 'text', 'status']
-                                }
-                            }
-                        },
-                        required: ['items']
-                    }
-                }
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'run_azur_lane_daily_script',
-                    description: '当用户明确要求执行碧蓝航线日常任务时，启动固定脚本 D:\\WorkSpace\\ToolsCmds\\Start_MuMu_and_Alas2.bat。',
-                    parameters: {
-                        type: 'object',
-                        properties: {},
-                        required: []
-                    }
-                }
-            }
-        ];
-
-        this.executors = {
-            get_current_time: async (argumentsObject = {}) => this.getCurrentTime(argumentsObject),
-            get_live2d_model_info: async (argumentsObject = {}) => this.getLive2DModelInfo(argumentsObject),
-            todo: async (argumentsObject = {}) => this.updateTodo(argumentsObject),
-            run_azur_lane_daily_script: async () => this.runAzurLaneDailyScript()
+        this.runtimeAdapters = {};
+        const dependencies = {
+            todoManager: this.todoManager,
+            live2dModelService,
+            getRuntimeAdapters: () => this.runtimeAdapters
         };
+        this.tools = [
+            ...createRuntimeTools(dependencies),
+            ...createSystemTools(dependencies),
+            ...createTaskTools(dependencies)
+        ];
+        this.toolDefinitions = this.tools.map((tool) => tool.definition);
+        this.executors = new Map(
+            this.tools.map((tool) => [tool.definition.function.name, tool.execute])
+        );
+        this.toolMetas = new Map(
+            this.tools.map((tool) => [
+                tool.definition.function.name,
+                {
+                    description: tool.definition.function.description || '',
+                    timelineEnabled: tool.timeline?.enabled !== false,
+                    timelineKind: tool.timeline?.kind || tool.definition.function.name
+                }
+            ])
+        );
+    }
+
+    setRuntimeAdapters(adapters = {}) {
+        this.runtimeAdapters = adapters || {};
     }
 
     getToolDefinitions() {
@@ -129,10 +62,44 @@ class CompanionToolRegistry {
         }
     }
 
+    emitToolTimeline(payload = {}) {
+        const emitter = this.runtimeAdapters?.onToolTimeline;
+        if (typeof emitter !== 'function') return;
+        try {
+            emitter(payload);
+        } catch (error) {
+            // Do not let timeline failures affect tool execution.
+        }
+    }
+
+    summarizeToolResult(result) {
+        if (typeof result === 'string') return result.trim();
+        if (!result || typeof result !== 'object') return '';
+
+        const preferred = [
+            result.summary,
+            result.detail,
+            result.text,
+            result.message
+        ].find((item) => typeof item === 'string' && item.trim());
+        if (preferred) return preferred.trim();
+
+        try {
+            return JSON.stringify(result);
+        } catch (error) {
+            return '';
+        }
+    }
+
     async executeToolCall(toolCall) {
         const functionName = toolCall?.function?.name;
-        const executor = this.executors[functionName];
+        const executor = this.executors.get(functionName);
         const argumentsObject = this.parseArguments(toolCall?.function?.arguments);
+        const meta = this.toolMetas.get(functionName) || {
+            description: '',
+            timelineEnabled: true,
+            timelineKind: functionName || 'tool'
+        };
 
         if (!executor) {
             return {
@@ -141,103 +108,61 @@ class CompanionToolRegistry {
             };
         }
 
+        const startedAt = Date.now();
+        if (meta.timelineEnabled) {
+            this.emitToolTimeline({
+                tool: functionName,
+                kind: meta.timelineKind,
+                status: 'running',
+                description: meta.description,
+                detail: meta.description,
+                args: argumentsObject,
+                startedAt,
+                createdAt: startedAt
+            });
+        }
+
         try {
             const result = await executor(argumentsObject);
+            if (meta.timelineEnabled) {
+                this.emitToolTimeline({
+                    tool: functionName,
+                    kind: meta.timelineKind,
+                    status: 'done',
+                    description: meta.description,
+                    detail: this.summarizeToolResult(result) || meta.description,
+                    args: argumentsObject,
+                    result,
+                    startedAt,
+                    createdAt: Date.now(),
+                    durationMs: Date.now() - startedAt
+                });
+            }
             return {
                 ok: true,
                 tool: functionName,
                 result
             };
         } catch (error) {
+            if (meta.timelineEnabled) {
+                this.emitToolTimeline({
+                    tool: functionName,
+                    kind: meta.timelineKind,
+                    status: 'error',
+                    description: meta.description,
+                    detail: error?.message || String(error),
+                    args: argumentsObject,
+                    startedAt,
+                    createdAt: Date.now(),
+                    durationMs: Date.now() - startedAt
+                });
+            }
             return {
                 ok: false,
                 tool: functionName,
                 error: error?.message || String(error)
             };
         }
-    }
-
-    getCurrentTime(argumentsObject = {}) {
-        const requestedTimezone = String(argumentsObject.timezone || '').trim();
-        const now = new Date();
-        let timezone = requestedTimezone;
-
-        if (!timezone) {
-            timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-        }
-
-        const formatter = new Intl.DateTimeFormat('zh-CN', {
-            timeZone: timezone,
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false,
-            weekday: 'long'
-        });
-
-        return {
-            timezone,
-            iso: now.toISOString(),
-            localFormatted: formatter.format(now),
-            timestampMs: now.getTime()
-        };
-    }
-
-    getLive2DModelInfo(argumentsObject = {}) {
-        const includeMotions = argumentsObject.include_motions !== false;
-        const includeExpressions = argumentsObject.include_expressions !== false;
-        const capabilities = live2dModelService.getCapabilities();
-
-        return {
-            rendererModelPath: capabilities.rendererModelPath,
-            fallbackMotion: capabilities.fallbackMotion,
-            motionCount: Array.isArray(capabilities.motions) ? capabilities.motions.length : 0,
-            expressionCount: Array.isArray(capabilities.expressions) ? capabilities.expressions.length : 0,
-            motions: includeMotions ? capabilities.motions : undefined,
-            expressions: includeExpressions ? capabilities.expressions : undefined,
-            expressionSemanticMap: includeExpressions ? capabilities.expressionSemanticMap : undefined
-        };
-    }
-
-    updateTodo(argumentsObject = {}) {
-        return {
-            board: this.todoManager.update(argumentsObject.items || []),
-            state: this.todoManager.getState()
-        };
-    }
-
-    runAzurLaneDailyScript() {
-        if (!fs.existsSync(ALAS_DAILY_SCRIPT_PATH)) {
-            throw new Error(`Script not found: ${ALAS_DAILY_SCRIPT_PATH}`);
-        }
-
-        const scriptDirectory = path.dirname(ALAS_DAILY_SCRIPT_PATH);
-        const escapedScriptPath = ALAS_DAILY_SCRIPT_PATH.replace(/'/g, "''");
-        const escapedWorkingDirectory = scriptDirectory.replace(/'/g, "''");
-        const startProcessCommand = [
-            `$scriptPath = '${escapedScriptPath}'`,
-            `$workingDirectory = '${escapedWorkingDirectory}'`,
-            "Start-Process -FilePath $scriptPath -WorkingDirectory $workingDirectory"
-        ].join('; ');
-
-        const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', startProcessCommand], {
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: false,
-            cwd: scriptDirectory
-        });
-
-        child.unref();
-
-        return {
-            started: true,
-            scriptPath: ALAS_DAILY_SCRIPT_PATH,
-            workingDirectory: scriptDirectory,
-            pid: child.pid || null
-        };
     }
 }
 

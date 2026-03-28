@@ -1,6 +1,7 @@
+/* 主要职责：定义桌宠覆盖层的全局样式，控制角色展示、气泡和基础动画表现。 */
 :root {
-    --font-body: "M PLUS Rounded 1c", "Segoe UI", sans-serif;
-    --font-display: "Zen Old Mincho", "Microsoft YaHei UI", serif;
+    --font-body: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+    --font-display: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
     --ink-950: rgba(7, 15, 31, 0.94);
     --ink-900: rgba(11, 21, 42, 0.9);
     --ink-850: rgba(16, 29, 55, 0.84);
@@ -822,3 +823,4 @@ canvas {
         min-height: 88px;
     }
 }
+

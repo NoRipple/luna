@@ -1,3 +1,4 @@
+<!-- 主要职责：说明渲染层目录的用途与结构，帮助维护者快速理解前端入口文件。 -->
 # Renderer Development Guide
 
 ## Current Structure
@@ -35,3 +36,4 @@ npm start
 - Model file is currently hardcoded in `app.js`:
   - `../../assets/Jellyfish/星月水母 试用版.model3.json`
 - `styles.css` currently keeps a visible debug border and oversized body (`1000vh/1000vw`) inherited from existing behavior.
+

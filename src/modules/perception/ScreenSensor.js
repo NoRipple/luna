@@ -1,3 +1,4 @@
+/* 主要职责：负责屏幕截图采集，支持按需抓取和可选的周期性采样。 */
 const { execFile } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const os = require('os');
@@ -9,14 +10,14 @@ class ScreenSensor extends EventEmitter {
     constructor() {
         super();
         this.intervalId = null;
-        this.interval = 30000; // 20 seconds
+        this.interval = 30000;
         this.isCapturing = false;
+        this.capturePromise = null;
     }
 
     start() {
         if (this.intervalId) return;
         console.log('Starting Screen Sensor...');
-        // Initial capture
         this.capture();
         this.intervalId = setInterval(() => this.capture(), this.interval);
     }
@@ -30,7 +31,26 @@ class ScreenSensor extends EventEmitter {
     }
 
     async capture() {
-        if (this.isCapturing) return;
+        const payload = await this.captureOnce();
+        if (payload) {
+            this.emit('capture', payload);
+        }
+    }
+
+    async captureOnce() {
+        if (this.capturePromise) {
+            return this.capturePromise;
+        }
+
+        this.capturePromise = this.performCaptureOnce();
+        try {
+            return await this.capturePromise;
+        } finally {
+            this.capturePromise = null;
+        }
+    }
+
+    async performCaptureOnce() {
         this.isCapturing = true;
 
         const tempImgPath = path.join(os.tmpdir(), `screenshot_${Date.now()}.jpg`);
@@ -62,9 +82,10 @@ class ScreenSensor extends EventEmitter {
 
             fs.unlinkSync(tempImgPath);
 
-            this.emit('capture', { base64Image, activeWindowTitle, capturedAt });
+            return { base64Image, activeWindowTitle, capturedAt };
         } catch (error) {
             console.error('Screen capture failed:', error);
+            return null;
         } finally {
             this.isCapturing = false;
         }
@@ -102,3 +123,4 @@ $sb.ToString()
 }
 
 module.exports = new ScreenSensor();
+

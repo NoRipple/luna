@@ -1,18 +1,21 @@
+/* 主要职责：作为 Electron 应用启动入口，负责装配窗口、IPC、TTS 队列、AgentRuntime 和 API 服务。 */
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const path = require('path');
 
-// Modules
 const llmService = require('../modules/thinking/LLMService');
 const ttsService = require('../modules/output/TTSService');
 const screenSensor = require('../modules/perception/ScreenSensor');
 const visionService = require('../modules/recognition/VisionService');
 const live2dModelService = require('../modules/output/Live2DModelService');
 const live2dModelCatalogService = require('../modules/output/Live2DModelCatalogService');
+const config = require('../config/runtimeConfig');
+const { AgentRuntime } = require('./agentRuntime');
 const { startApiServer } = require('./apiServer');
 const { registerIpcHandlers } = require('./ipcHandlers');
 
 let overlayWindow;
 let panelWindow;
+let apiServer;
 
 let ttsController = null;
 let ttsQueue = [];
@@ -22,20 +25,22 @@ let waitingPlaybackJobId = null;
 let nextTtsJobId = 1;
 let globalMouseTimer = null;
 let lastGlobalMousePayload = null;
-let nextUiTaskId = 1;
-const taskQueue = [];
-let activeTask = null;
-const uiHistory = [];
-const historyByTaskId = new Map();
-const uiChatRecords = [];
-const chatRecordByTaskId = new Map();
-let latestPerceptionState = {
-    status: 'idle',
-    summary: '暂无感知结果',
-    detail: '',
-    updatedAt: null
-};
-let unsubscribeTodoState = null;
+let backgroundPerceptionTimer = null;
+let backgroundPerceptionRunning = false;
+let latestUiPanelState = null;
+let uiStateVersion = 0;
+let uiPerfEmitSeq = 0;
+let lastUiPerfEmitAt = 0;
+
+function ensureOverlayOnTop() {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    try {
+        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        overlayWindow.moveTop();
+    } catch (error) {
+        // noop
+    }
+}
 
 function buildSerializedLive2DCapabilities(capabilities) {
     return {
@@ -65,359 +70,66 @@ function getLive2DConfigFallback() {
     };
 }
 
-function summarizeText(text, maxLen = 80) {
-    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-    if (!normalized) return '';
-    if (normalized.length <= maxLen) return normalized;
-    return `${normalized.slice(0, maxLen - 1)}…`;
-}
+function commitUiPanelState(payload) {
+    const nextState = payload || runtime.buildUiPanelState();
+    uiStateVersion += 1;
+    latestUiPanelState = {
+        ...nextState,
+        meta: {
+            ...(nextState?.meta || {}),
+            version: uiStateVersion,
+            updatedAt: Date.now()
+        }
+    };
 
-function clampChatRecords() {
-    while (uiChatRecords.length > 10) {
-        const removed = uiChatRecords.shift();
-        if (removed && removed.taskId !== undefined && removed.taskId !== null) {
-            chatRecordByTaskId.delete(removed.taskId);
+    if (config.debug?.uiPerf) {
+        const now = Date.now();
+        const deltaMs = lastUiPerfEmitAt ? (now - lastUiPerfEmitAt) : 0;
+        lastUiPerfEmitAt = now;
+        uiPerfEmitSeq += 1;
+        const timelineCount = Array.isArray(latestUiPanelState?.timeline) ? latestUiPanelState.timeline.length : 0;
+        const chatCount = Array.isArray(latestUiPanelState?.chatRecords) ? latestUiPanelState.chatRecords.length : 0;
+        const queueLength = Number(latestUiPanelState?.status?.queueLength || 0);
+        if (deltaMs <= Math.max(10, Number(config.debug?.uiPerfSlowMs) || 32) || uiPerfEmitSeq % 25 === 0) {
+            console.log(
+                `[UI PERF][main] emit seq=${uiPerfEmitSeq} delta_ms=${deltaMs} chat=${chatCount} timeline=${timelineCount} queue=${queueLength}`
+            );
         }
     }
 }
 
-function appendChatRecord(record = {}) {
-    const now = Date.now();
-    const entry = {
-        id: `chat-${now}-${Math.random().toString(16).slice(2, 8)}`,
-        taskId: null,
-        source: 'command',
-        status: 'done',
-        inputText: '',
-        inputSummary: '',
-        responseText: '',
-        responseSummary: '',
-        createdAt: now,
-        updatedAt: now,
-        ...record
-    };
-    uiChatRecords.push(entry);
-    if (entry.taskId !== undefined && entry.taskId !== null) {
-        chatRecordByTaskId.set(entry.taskId, entry);
+function getUiPanelStateSnapshot() {
+    if (latestUiPanelState) {
+        return latestUiPanelState;
     }
-    clampChatRecords();
-    return entry;
+    commitUiPanelState(runtime.buildUiPanelState());
+    return latestUiPanelState;
 }
 
-function upsertChatRecordByTaskId(taskId, patch = {}, defaults = {}) {
-    const now = Date.now();
-    if (taskId === undefined || taskId === null) {
-        return appendChatRecord({
-            ...defaults,
-            ...patch,
-            updatedAt: now
-        });
-    }
-
-    const existing = chatRecordByTaskId.get(taskId);
-    if (existing) {
-        Object.assign(existing, patch, { updatedAt: now });
-        return existing;
-    }
-
-    return appendChatRecord({
-        taskId,
-        source: 'command',
-        status: 'queued',
-        createdAt: now,
-        updatedAt: now,
-        ...defaults,
-        ...patch
-    });
-}
-
-function updateLatestPerceptionState(patch = {}) {
-    latestPerceptionState = {
-        ...latestPerceptionState,
-        ...patch,
-        updatedAt: Date.now()
-    };
-}
-
-function buildMergedCommandText(parts) {
-    if (!Array.isArray(parts) || parts.length === 0) return '';
-    if (parts.length === 1) return parts[0];
-    return parts
-        .map((item, index) => `用户追加命令${index + 1}：${item}`)
-        .join('\n');
-}
-
-function clampUiHistory() {
-    while (uiHistory.length > 10) {
-        const removed = uiHistory.shift();
-        if (removed) {
-            historyByTaskId.delete(removed.taskId);
-        }
-    }
-}
-
-function pushHistoryEntry(task, extra = {}) {
-    const entry = {
-        taskId: task.id,
-        type: task.type,
-        status: 'queued',
-        inputSummary: '',
-        resultSummary: '',
-        mergedCount: task.type === 'command' ? (task.parts?.length || 1) : 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        ...extra
-    };
-    uiHistory.push(entry);
-    historyByTaskId.set(task.id, entry);
-    clampUiHistory();
-}
-
-function updateHistoryEntry(taskId, patch = {}) {
-    const entry = historyByTaskId.get(taskId);
-    if (!entry) return;
-    Object.assign(entry, patch, { updatedAt: Date.now() });
-}
-
-function buildUiPanelState() {
-    let statusText = '空闲';
-    if (activeTask) {
-        statusText = activeTask.type === 'perception' ? '正在感知' : '正在执行命令';
-    } else if (taskQueue.length > 0) {
-        statusText = `等待中（${taskQueue.length}）`;
-    }
-
-    return {
-        status: {
-            text: statusText,
-            activeType: activeTask ? activeTask.type : null,
-            queueLength: taskQueue.length
-        },
-        realtimePerception: { ...latestPerceptionState },
-        todoBoard: llmService.getTodoState ? llmService.getTodoState() : { items: [], updatedAt: null, summary: 'No todos.', hasOpenItems: false },
-        chatRecords: uiChatRecords.map((entry) => ({ ...entry })),
-        history: uiHistory.map((entry) => ({ ...entry }))
-    };
-}
-
-function emitUiHistoryUpdate() {
-    const payload = buildUiPanelState();
-    if (panelWindow && !panelWindow.isDestroyed()) {
-        panelWindow.webContents.send('ui-history-updated', payload);
-    }
+function emitPanelVisibilityChanged(open) {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
-        overlayWindow.webContents.send('ui-history-updated', payload);
-    }
-}
-
-function bindTodoStateUpdates() {
-    if (unsubscribeTodoState || !llmService.onTodoStateChanged) {
-        return;
-    }
-
-    unsubscribeTodoState = llmService.onTodoStateChanged(() => {
-        emitUiHistoryUpdate();
-    });
-}
-
-function createPerceptionTask(capturePayload) {
-    return {
-        id: nextUiTaskId++,
-        type: 'perception',
-        capturePayload
-    };
-}
-
-function createCommandTask(text) {
-    return {
-        id: nextUiTaskId++,
-        type: 'command',
-        parts: [text]
-    };
-}
-
-function enqueuePerceptionTask(capturePayload) {
-    const task = createPerceptionTask(capturePayload);
-    taskQueue.push(task);
-    pushHistoryEntry(task, {
-        inputSummary: '后台感知任务已入队',
-        resultSummary: ''
-    });
-    updateLatestPerceptionState({
-        status: 'queued',
-        summary: '后台感知任务已入队',
-        detail: ''
-    });
-    emitUiHistoryUpdate();
-    processTaskQueue().catch(() => {});
-}
-
-function enqueueOrMergeCommandTask(text) {
-    const normalizedText = String(text || '').trim();
-    if (!normalizedText) {
-        return { ok: false, message: '命令不能为空' };
-    }
-
-    const pendingCommandTask = taskQueue.find((item) => item.type === 'command');
-    if (pendingCommandTask) {
-        pendingCommandTask.parts.push(normalizedText);
-        const mergedText = buildMergedCommandText(pendingCommandTask.parts);
-        updateHistoryEntry(pendingCommandTask.id, {
-            mergedCount: pendingCommandTask.parts.length,
-            inputSummary: summarizeText(mergedText)
-        });
-        upsertChatRecordByTaskId(pendingCommandTask.id, {
-            source: 'command',
-            status: 'queued',
-            inputText: mergedText,
-            inputSummary: summarizeText(mergedText),
-            responseText: '等待执行…',
-            responseSummary: '等待执行'
-        });
-        emitUiHistoryUpdate();
-        return { ok: true, merged: true, taskId: pendingCommandTask.id };
-    }
-
-    const task = createCommandTask(normalizedText);
-    taskQueue.unshift(task);
-    pushHistoryEntry(task, {
-        inputSummary: summarizeText(normalizedText)
-    });
-    upsertChatRecordByTaskId(task.id, {
-        source: 'command',
-        status: 'queued',
-        inputText: normalizedText,
-        inputSummary: summarizeText(normalizedText),
-        responseText: '等待执行…',
-        responseSummary: '等待执行'
-    });
-    emitUiHistoryUpdate();
-    processTaskQueue().catch(() => {});
-    return { ok: true, merged: false, taskId: task.id };
-}
-
-async function processTaskQueue() {
-    if (activeTask) return;
-    if (!taskQueue.length) {
-        emitUiHistoryUpdate();
-        return;
-    }
-
-    activeTask = taskQueue.shift();
-    updateHistoryEntry(activeTask.id, {
-        status: 'running',
-        resultSummary: activeTask.type === 'perception' ? 'AI 正在感知...' : '命令执行中...'
-    });
-    if (activeTask.type === 'perception') {
-        updateLatestPerceptionState({
-            status: 'running',
-            summary: 'AI 正在感知...',
-            detail: ''
-        });
-    } else if (activeTask.type === 'command') {
-        const mergedText = buildMergedCommandText(activeTask.parts || []);
-        upsertChatRecordByTaskId(activeTask.id, {
-            source: 'command',
-            status: 'running',
-            inputText: mergedText,
-            inputSummary: summarizeText(mergedText),
-            responseText: 'AI 正在生成回复…',
-            responseSummary: '命令执行中'
-        });
-    }
-    emitUiHistoryUpdate();
-
-    try {
-        if (activeTask.type === 'perception') {
-            const analysis = await visionService.analyzeScreen(activeTask.capturePayload);
-            const response = await llmService.chatWithCompanion(analysis, { inputType: 'perception' });
-            await enqueueTtsJob(response);
-            const responseText = response?.text || '';
-            const analysisSummary = summarizeText(analysis);
-            const responseSummary = summarizeText(responseText);
-            updateHistoryEntry(activeTask.id, {
-                status: 'done',
-                resultSummary: `感知完成：${responseSummary}`,
-                inputSummary: analysisSummary
-            });
-            updateLatestPerceptionState({
-                status: 'done',
-                summary: responseSummary || '感知完成',
-                detail: [
-                    `输入：${analysisSummary || '（空）'}`,
-                    `AI：${responseText || '（空）'}`
-                ].join('\n')
-            });
-            appendChatRecord({
-                source: 'perception',
-                status: 'done',
-                inputText: analysis,
-                inputSummary: analysisSummary,
-                responseText,
-                responseSummary
-            });
-        } else if (activeTask.type === 'command') {
-            const mergedText = buildMergedCommandText(activeTask.parts);
-            const response = await llmService.chatWithCompanion(mergedText, { inputType: 'command' });
-            const responseText = response?.text || '';
-            const mergedSummary = summarizeText(mergedText);
-            const responseSummary = summarizeText(responseText);
-            await enqueueTtsJob(response);
-            updateHistoryEntry(activeTask.id, {
-                status: 'done',
-                mergedCount: activeTask.parts.length,
-                inputSummary: mergedSummary,
-                resultSummary: `命令完成：${responseSummary}`
-            });
-            upsertChatRecordByTaskId(activeTask.id, {
-                source: 'command',
-                status: 'done',
-                inputText: mergedText,
-                inputSummary: mergedSummary,
-                responseText,
-                responseSummary
-            });
+        overlayWindow.webContents.send('panel-visibility-changed', { open: Boolean(open) });
+        if (open) {
+            ensureOverlayOnTop();
         }
-    } catch (error) {
-        const errorSummary = summarizeText(error?.message || error);
-        updateHistoryEntry(activeTask.id, {
-            status: 'error',
-            resultSummary: `执行失败：${errorSummary}`
-        });
-        if (activeTask.type === 'perception') {
-            updateLatestPerceptionState({
-                status: 'error',
-                summary: errorSummary || '感知失败',
-                detail: `错误：${error?.message || error}`
-            });
-            appendChatRecord({
-                source: 'perception',
-                status: 'error',
-                inputText: '',
-                inputSummary: '后台感知任务',
-                responseText: `执行失败：${error?.message || error}`,
-                responseSummary: errorSummary
-            });
-        } else {
-            upsertChatRecordByTaskId(activeTask.id, {
-                source: 'command',
-                status: 'error',
-                inputText: buildMergedCommandText(activeTask.parts || []),
-                inputSummary: summarizeText(buildMergedCommandText(activeTask.parts || [])),
-                responseText: `执行失败：${error?.message || error}`,
-                responseSummary: errorSummary
-            });
-        }
-    } finally {
-        activeTask = null;
-        emitUiHistoryUpdate();
-        processTaskQueue().catch(() => {});
     }
 }
+
+const runtime = new AgentRuntime({
+    llmService,
+    screenSensor,
+    visionService,
+    live2dModelService,
+    buildSerializedLive2DCapabilities,
+    getLive2DConfigFallback,
+    enqueueTtsJob,
+    onStateChanged: commitUiPanelState
+});
 
 function startGlobalMouseTracking() {
     if (globalMouseTimer) return;
 
+    const pollInterval = Math.max(8, Number(config.core?.globalMousePollIntervalMs) || 16);
     globalMouseTimer = setInterval(() => {
         if (!overlayWindow || overlayWindow.isDestroyed()) return;
 
@@ -443,7 +155,7 @@ function startGlobalMouseTracking() {
 
         lastGlobalMousePayload = payload;
         overlayWindow.webContents.send('global-mouse-position', payload);
-    }, 16);
+    }, pollInterval);
 }
 
 function stopGlobalMouseTracking() {
@@ -452,6 +164,37 @@ function stopGlobalMouseTracking() {
         globalMouseTimer = null;
     }
     lastGlobalMousePayload = null;
+}
+
+function startBackgroundPerceptionLoop() {
+    if (backgroundPerceptionTimer) return;
+    const intervalMs = Math.max(1000, Number(config.vision?.backgroundIntervalMs) || 10000);
+
+    const runOnce = async () => {
+        if (backgroundPerceptionRunning) return;
+        backgroundPerceptionRunning = true;
+        try {
+            await runtime.captureAnalyzePersist('background');
+            commitUiPanelState(runtime.buildUiPanelState());
+        } catch (error) {
+            console.warn('[BackgroundPerception] run failed:', error?.message || error);
+        } finally {
+            backgroundPerceptionRunning = false;
+        }
+    };
+
+    runOnce().catch(() => {});
+    backgroundPerceptionTimer = setInterval(() => {
+        runOnce().catch(() => {});
+    }, intervalMs);
+}
+
+function stopBackgroundPerceptionLoop() {
+    if (backgroundPerceptionTimer) {
+        clearInterval(backgroundPerceptionTimer);
+        backgroundPerceptionTimer = null;
+    }
+    backgroundPerceptionRunning = false;
 }
 
 function enqueueTtsJob(job) {
@@ -466,14 +209,15 @@ function enqueueTtsJob(job) {
 }
 
 async function playNextTtsJob() {
-    if (isTtsPlaying) return;
-    if (!ttsQueue.length) return;
+    if (isTtsPlaying || !ttsQueue.length) return;
 
     isTtsPlaying = true;
     const { jobId, job, resolve } = ttsQueue.shift();
-    const normalizedJob = {
-        ...job
-    };
+    const normalizedJob = { ...job };
+    const hardTimeoutMs = Math.max(1000, Number(config.core?.ttsHardTimeoutMs) || 70000);
+    const playbackEndedFallbackMs = Math.max(1000, Number(config.core?.ttsPlaybackEndedFallbackMs) || 60000);
+    const speakTimeoutMs = Math.max(1000, Number(config.core?.ttsSpeakTimeoutMs) || 25000);
+
     if (Object.prototype.hasOwnProperty.call(normalizedJob, 'motion')) {
         try {
             normalizedJob.motion = live2dModelService.sanitizeMotionName(job?.motion);
@@ -488,9 +232,11 @@ async function playNextTtsJob() {
             normalizedJob.expression = job?.expression || '';
         }
     }
+
     console.log(`[TTS Queue] dequeue | job_id=${jobId} | queue_length=${ttsQueue.length} | has_text=${!!(job && job.text)}`);
     const jobStartedAt = Date.now();
     let jobFinished = false;
+
     const finishJob = () => {
         if (jobFinished) return;
         jobFinished = true;
@@ -499,13 +245,13 @@ async function playNextTtsJob() {
         console.log(`[TTS Queue] job_done | queue_length=${ttsQueue.length} | is_playing=${isTtsPlaying} | elapsed_ms=${Date.now() - jobStartedAt}`);
         playNextTtsJob();
     };
-    const hardTimeoutMs = 70000;
+
     const hardTimeout = setTimeout(() => {
         console.warn(`[TTS Queue] hard_timeout_release=true | timeout_ms=${hardTimeoutMs}`);
         if (ttsController) {
             try {
                 ttsController.abort();
-            } catch (e) {
+            } catch (error) {
                 // ignore
             }
         }
@@ -530,10 +276,9 @@ async function playNextTtsJob() {
                         ttsPlaybackEndedResolve = null;
                         endedResolve();
                     }
-                }, 60000);
+                }, playbackEndedFallbackMs);
             });
 
-            // Stream audio chunks; do not abort/interrupt current playback.
             ttsController = new AbortController();
             let chunkCount = 0;
             const ttsStartedAt = Date.now();
@@ -549,11 +294,10 @@ async function playNextTtsJob() {
                 ttsController.signal
             );
 
-            const timeoutMs = 25000;
             const timeoutPromise = new Promise((_, reject) => {
                 setTimeout(() => {
-                    reject(new Error(`TTS speak timeout after ${timeoutMs}ms`));
-                }, timeoutMs);
+                    reject(new Error(`TTS speak timeout after ${speakTimeoutMs}ms`));
+                }, speakTimeoutMs);
             });
 
             await Promise.race([speakPromise, timeoutPromise]).catch((error) => {
@@ -561,7 +305,7 @@ async function playNextTtsJob() {
                 if (ttsController) {
                     try {
                         ttsController.abort();
-                    } catch (e) {
+                    } catch (abortError) {
                         // ignore
                     }
                 }
@@ -569,17 +313,13 @@ async function playNextTtsJob() {
 
             console.log(`[TTS Queue] stream_finished | chunk_count=${chunkCount} | elapsed_ms=${Date.now() - ttsStartedAt}`);
             if (chunkCount > 0) {
-                // Finalize MediaSource so <audio> can reach 'ended'.
                 if (overlayWindow && !overlayWindow.isDestroyed()) {
                     overlayWindow.webContents.send('tts-ended', { jobId });
                 }
-
-                // Wait until audio playback is fully finished.
                 await waitForEnded;
                 waitingPlaybackJobId = null;
                 console.log(`[TTS Queue] waiting_for_ended=false | job_id=${jobId}`);
             } else {
-                // No audio data received, do not wait for renderer ended event.
                 waitingPlaybackJobId = null;
                 ttsPlaybackEndedResolve = null;
                 console.log(`[TTS Queue] no_audio_chunk_skip_wait=true | job_id=${jobId}`);
@@ -587,25 +327,16 @@ async function playNextTtsJob() {
                     overlayWindow.webContents.send('tts-ended', { jobId });
                 }
             }
-        } else {
-            // No audio: immediately consider job done.
-            if (overlayWindow && !overlayWindow.isDestroyed()) {
-                overlayWindow.webContents.send('tts-ended', { jobId });
-            }
+        } else if (overlayWindow && !overlayWindow.isDestroyed()) {
+            overlayWindow.webContents.send('tts-ended', { jobId });
         }
-    } catch (e) {
-        console.error('TTS playback error:', e);
+    } catch (error) {
+        console.error('TTS playback error:', error);
     }
 
     clearTimeout(hardTimeout);
     finishJob();
 }
-
-// --- Module Wiring (Perception -> Unified Queue) ---
-screenSensor.on('capture', async (capturePayload) => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    enqueuePerceptionTask(capturePayload);
-});
 
 function createOverlayWindow() {
     overlayWindow = new BrowserWindow({
@@ -625,19 +356,13 @@ function createOverlayWindow() {
     });
 
     overlayWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
     overlayWindow.webContents.on('did-finish-load', () => {
         startGlobalMouseTracking();
-        emitUiHistoryUpdate();
+        ensureOverlayOnTop();
+        commitUiPanelState(runtime.buildUiPanelState());
     });
 
-    // Start Screen Sensor if not already started
-    screenSensor.start();
-
-    // 打开开发者工具 (调试用，发布时可注释)
-    // overlayWindow.webContents.openDevTools({ mode: 'detach' });
-
-    overlayWindow.on('closed', function () {
+    overlayWindow.on('closed', () => {
         stopGlobalMouseTracking();
         overlayWindow = null;
         if (!panelWindow || panelWindow.isDestroyed()) {
@@ -650,6 +375,8 @@ function createPanelWindow() {
     if (panelWindow && !panelWindow.isDestroyed()) {
         panelWindow.show();
         panelWindow.focus();
+        emitPanelVisibilityChanged(true);
+        ensureOverlayOnTop();
         return panelWindow;
     }
 
@@ -666,24 +393,43 @@ function createPanelWindow() {
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
+            preload: path.join(__dirname, 'preload.js'),
+            backgroundThrottling: false
         }
     });
 
     panelWindow.loadFile(path.join(__dirname, '../renderer/panel.html'));
     panelWindow.once('ready-to-show', () => {
         if (!panelWindow || panelWindow.isDestroyed()) return;
+        panelWindow.maximize();
         panelWindow.show();
-        emitUiHistoryUpdate();
+        emitPanelVisibilityChanged(true);
+        ensureOverlayOnTop();
+        commitUiPanelState(runtime.buildUiPanelState());
     });
 
-    // Clicking outside this independent panel focuses another window and should collapse it.
-    panelWindow.on('blur', () => {
-        if (!panelWindow || panelWindow.isDestroyed()) return;
-        panelWindow.hide();
+    panelWindow.on('show', () => {
+        emitPanelVisibilityChanged(true);
+        ensureOverlayOnTop();
+    });
+    panelWindow.on('focus', () => {
+        ensureOverlayOnTop();
+    });
+    panelWindow.on('move', () => {
+        ensureOverlayOnTop();
+    });
+    panelWindow.on('resize', () => {
+        ensureOverlayOnTop();
+    });
+    panelWindow.on('hide', () => {
+        emitPanelVisibilityChanged(false);
+    });
+    panelWindow.on('minimize', () => {
+        emitPanelVisibilityChanged(false);
     });
 
     panelWindow.on('closed', () => {
+        emitPanelVisibilityChanged(false);
         panelWindow = null;
         if (!overlayWindow || overlayWindow.isDestroyed()) {
             app.quit();
@@ -710,8 +456,8 @@ registerIpcHandlers({
     getOverlayWindow: () => overlayWindow,
     getPanelWindow: () => panelWindow,
     onTtsPlaybackEnded,
-    buildUiPanelState,
-    enqueueOrMergeCommandTask,
+    buildUiPanelState: () => getUiPanelStateSnapshot(),
+    enqueueOrMergeCommandTask: (text) => runtime.enqueueOrMergeCommandTask(text),
     live2dModelService,
     live2dModelCatalogService,
     buildSerializedLive2DCapabilities,
@@ -721,23 +467,37 @@ registerIpcHandlers({
 });
 
 app.on('ready', () => {
-    bindTodoStateUpdates();
+    commitUiPanelState(runtime.buildUiPanelState());
+    runtime.bindTodoStateUpdates();
+    llmService.configureRuntimeAdapters(runtime.createRuntimeAdapters());
     createOverlayWindow();
-    startApiServer({
+    startBackgroundPerceptionLoop();
+    runtime.enqueueAutonomousTask('boot');
+    apiServer = startApiServer({
         llmService,
         getOverlayWindow: () => overlayWindow
     });
 });
 
-app.on('window-all-closed', function () {
+app.on('window-all-closed', () => {
     stopGlobalMouseTracking();
+    stopBackgroundPerceptionLoop();
+    runtime.dispose();
     if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('activate', function () {
-    if (overlayWindow === null) createOverlayWindow();
+app.on('activate', () => {
+    if (overlayWindow === null) {
+        createOverlayWindow();
+    }
 });
 
 app.on('before-quit', () => {
     stopGlobalMouseTracking();
+    stopBackgroundPerceptionLoop();
+    runtime.dispose();
+    if (apiServer && typeof apiServer.close === 'function') {
+        apiServer.close();
+    }
 });
+
