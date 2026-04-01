@@ -6,6 +6,46 @@
     grid-template-columns: clamp(148px, 12vw, 164px) minmax(0, 1fr);
     gap: clamp(10px, 1vw, 14px);
     box-sizing: border-box;
+    position: relative;
+    overflow: hidden;
+}
+
+#panel-shell::before,
+#panel-shell::after {
+    content: '';
+    position: absolute;
+    pointer-events: none;
+    z-index: 0;
+    border-radius: 999px;
+    filter: blur(42px);
+    opacity: 0.26;
+}
+
+#panel-shell::before {
+    width: 42vw;
+    height: 42vw;
+    min-width: 420px;
+    min-height: 420px;
+    left: -18vw;
+    top: -16vw;
+    background: radial-gradient(circle, rgba(205, 181, 142, 0.46), rgba(205, 181, 142, 0));
+    animation: panel-ambient-drift-1 10s ease-in-out infinite;
+}
+
+#panel-shell::after {
+    width: 36vw;
+    height: 36vw;
+    min-width: 360px;
+    min-height: 360px;
+    right: -16vw;
+    bottom: -12vw;
+    background: radial-gradient(circle, rgba(143, 173, 226, 0.4), rgba(143, 173, 226, 0));
+    animation: panel-ambient-drift-2 12s ease-in-out infinite;
+}
+
+#panel-shell > * {
+    position: relative;
+    z-index: 1;
 }
 
 .app-rail {
@@ -110,7 +150,7 @@
 }
 
 .main-column {
-    grid-template-rows: minmax(0, 1fr) clamp(180px, 24vh, 250px);
+    grid-template-rows: minmax(0, 1fr) clamp(220px, 32vh, 340px);
 }
 
 .side-column {
@@ -150,7 +190,7 @@
     }
 
     .main-column {
-        grid-template-rows: minmax(0, 1fr) clamp(180px, 28vh, 220px);
+        grid-template-rows: minmax(0, 1fr) clamp(210px, 34vh, 300px);
     }
 
     .side-column {
@@ -190,7 +230,7 @@ body.panel-window.scaled-layout .workspace-grid {
 }
 
 body.panel-window.scaled-layout .main-column {
-    grid-template-rows: minmax(0, 1fr) 250px;
+    grid-template-rows: minmax(0, 1fr) 320px;
 }
 
 body.panel-window.scaled-layout .side-column {
@@ -200,4 +240,28 @@ body.panel-window.scaled-layout .side-column {
 
 body.panel-window.scaled-layout .app-rail {
     display: grid;
+}
+
+@keyframes panel-ambient-drift-1 {
+    0% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(4%, 6%, 0) scale(1.06);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+}
+
+@keyframes panel-ambient-drift-2 {
+    0% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(-6%, -5%, 0) scale(1.08);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
 }

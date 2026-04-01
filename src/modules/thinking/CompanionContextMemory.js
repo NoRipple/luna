@@ -1,51 +1,22 @@
-/* 主要职责：维护陪伴 Agent 的上下文记忆，负责近期轨迹、长期摘要和上下文拼装。 */
+/* 主要职责：维护陪伴 Agent 的运行时上下文，负责近期轨迹与记忆块拼装。 */
 class CompanionContextMemory {
-    constructor() {
-        this.maxSessionMessages = 20;
-        this.maxRecentAnalyses = 8;
-        this.summaryEveryRounds = 10;
+    constructor(options = {}) {
+        this.maxRecentAnalyses = Math.max(4, Number(options.maxRecentAnalyses) || 8);
 
         this.recentAnalyses = [];
-        this.longTermSummary = '';
-        this.summarySourceBuffer = [];
         this.companionRoundCount = 0;
-    }
-
-    trimSession(messages, keepHeadCount = 0) {
-        if (!Array.isArray(messages)) return;
-        if (messages.length <= this.maxSessionMessages) return;
-
-        const head = messages.slice(0, keepHeadCount);
-        const tail = messages.slice(-(this.maxSessionMessages - keepHeadCount));
-        const normalizedTail = this.normalizeSessionTail(tail);
-        messages.splice(0, messages.length, ...head, ...normalizedTail);
-    }
-
-    normalizeSessionTail(messages) {
-        if (!Array.isArray(messages) || !messages.length) return [];
-
-        const normalized = messages.slice();
-
-        // Tool messages must always follow an assistant message with tool_calls.
-        while (normalized.length && normalized[0]?.role === 'tool') {
-            normalized.shift();
-        }
-
-        // Drop a dangling assistant tool-call message if its tool results were trimmed away.
-        while (normalized.length) {
-            const last = normalized[normalized.length - 1];
-            const hasToolCalls = Array.isArray(last?.tool_calls) && last.tool_calls.length > 0;
-            if (!hasToolCalls) break;
-            normalized.pop();
-        }
-
-        return normalized;
     }
 
     buildGlobalContext(currentInput, options = {}) {
         const inputType = options.inputType === 'command' ? 'command' : 'perception';
+        const memorySnapshot = options.memorySnapshot && typeof options.memorySnapshot === 'object'
+            ? options.memorySnapshot
+            : {};
         const historyLines = this.recentAnalyses.map((item, idx) => `${idx + 1}. ${item}`);
         const recentTrajectory = historyLines.length ? historyLines.join('\n') : '- （暂无）';
+        const longTermMemory = String(memorySnapshot.longTerm || '').trim() || '（暂无）';
+        const recentMemoryLogs = String(memorySnapshot.recentDaily || '').trim() || '（暂无）';
+        const retrievedMemories = String(memorySnapshot.retrieved || '').trim() || '（暂无）';
         const normalizedInput = String(currentInput || '').trim() || '（空）';
 
         const currentBlock =
@@ -55,9 +26,17 @@ class CompanionContextMemory {
 
         return [
             '<Context>',
-            '<LongTermSummary>',
-            this.longTermSummary || '（暂无）',
-            '</LongTermSummary>',
+            '<LongTermMemory>',
+            longTermMemory,
+            '</LongTermMemory>',
+            '',
+            '<RecentMemoryLogs>',
+            recentMemoryLogs,
+            '</RecentMemoryLogs>',
+            '',
+            '<RetrievedMemories>',
+            retrievedMemories,
+            '</RetrievedMemories>',
             '',
             '<RecentStateTrajectory order="oldToNew">',
             recentTrajectory,
@@ -80,44 +59,7 @@ class CompanionContextMemory {
         if (this.recentAnalyses.length > this.maxRecentAnalyses) {
             this.recentAnalyses.shift();
         }
-        this.summarySourceBuffer.push(trajectoryItem);
         this.companionRoundCount += 1;
-    }
-
-    shouldRefreshSummary() {
-        return this.companionRoundCount % this.summaryEveryRounds === 0
-            && this.summarySourceBuffer.length >= this.summaryEveryRounds;
-    }
-
-    buildSummaryPrompt() {
-        const lines = this.summarySourceBuffer.map((item, idx) => `${idx + 1}. ${item}`);
-        return [
-            '你是会话摘要器。请将“历史摘要 + 新的10轮状态”压缩为新的长期摘要。',
-            '要求：',
-            '1. 只输出纯文本，不要 Markdown，不要 JSON。',
-            '2. 长度控制在 120~220 字。',
-            '3. 保留稳定偏好、近期主任务、情绪趋势与节奏变化。',
-            '',
-            `历史摘要：${this.longTermSummary || '（暂无）'}`,
-            '',
-            '新的10轮状态：',
-            ...lines
-        ].join('\n');
-    }
-
-    applySummary(summaryText) {
-        if (summaryText) this.longTermSummary = summaryText;
-        this.summarySourceBuffer = [];
-    }
-
-    compactSessionAfterSummary(messages, keepHeadCount = 1, keepRecentMessages = 6) {
-        if (!Array.isArray(messages)) return;
-        if (messages.length <= keepHeadCount + keepRecentMessages) return;
-
-        const head = messages.slice(0, keepHeadCount);
-        const tail = messages.slice(-keepRecentMessages);
-        const normalizedTail = this.normalizeSessionTail(tail);
-        messages.splice(0, messages.length, ...head, ...normalizedTail);
     }
 }
 

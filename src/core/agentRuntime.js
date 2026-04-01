@@ -1,5 +1,6 @@
 /* 主要职责：承载常驻 Agent 运行时，包括任务调度、休眠唤醒、UI 状态汇总和 runtime adapter 装配。 */
 const config = require('../config/runtimeConfig');
+const { spawn } = require('child_process');
 
 class AgentRuntime {
     constructor({
@@ -10,6 +11,8 @@ class AgentRuntime {
         buildSerializedLive2DCapabilities,
         getLive2DConfigFallback,
         enqueueTtsJob,
+        createRealtimeAsrService,
+        listenCaptureService,
         onStateChanged
     }) {
         this.llmService = llmService;
@@ -19,6 +22,10 @@ class AgentRuntime {
         this.buildSerializedLive2DCapabilities = buildSerializedLive2DCapabilities;
         this.getLive2DConfigFallback = getLive2DConfigFallback;
         this.enqueueTtsJob = enqueueTtsJob;
+        this.createRealtimeAsrService = typeof createRealtimeAsrService === 'function'
+            ? createRealtimeAsrService
+            : null;
+        this.listenCaptureService = listenCaptureService || null;
         this.onStateChanged = typeof onStateChanged === 'function' ? onStateChanged : () => {};
 
         this.nextUiTaskId = 1;
@@ -48,6 +55,17 @@ class AgentRuntime {
             this.autonomousSleepMinSeconds,
             Number(config.core?.autonomousSleepMaxSeconds) || 60
         );
+        this.maxSubagentConcurrency = Math.max(1, Number(config.core?.maxSubagentConcurrency) || 2);
+        this.subagentActiveCount = 0;
+        this.subagentWaitQueue = [];
+        this.subagentChannels = new Map();
+        this.nextSubagentSeq = 1;
+        this.backgroundTasks = new Map();
+        this.backgroundTaskNotifications = [];
+        this.nextBackgroundTaskSeq = 1;
+        this.maxBackgroundTaskHistory = 120;
+        this.maxBackgroundTaskNotifications = 120;
+        this.latestCompactionBoundary = null;
     }
 
     bindTodoStateUpdates() {
@@ -91,6 +109,425 @@ class AgentRuntime {
         if (!normalized) return '';
         if (normalized.length <= maxLen) return normalized;
         return `${normalized.slice(0, maxLen - 1)}…`;
+    }
+
+    makeSubagentReasonLabel({ description, prompt } = {}) {
+        const reason = this.summarizeText(description || '', 42);
+        if (reason) return reason;
+        const promptSummary = this.summarizeText(prompt || '', 42);
+        return promptSummary || '未命名子任务';
+    }
+
+    createSubagentChannel({ description, prompt } = {}) {
+        const channelId = `subagent-${Date.now()}-${this.nextSubagentSeq++}`;
+        const label = this.makeSubagentReasonLabel({ description, prompt });
+        const now = Date.now();
+        const channel = {
+            id: channelId,
+            name: label,
+            type: 'subagent',
+            status: 'queued',
+            createdAt: now,
+            updatedAt: now
+        };
+        this.subagentChannels.set(channelId, channel);
+        return channel;
+    }
+
+    updateSubagentChannel(channelId, patch = {}) {
+        const channel = this.subagentChannels.get(channelId);
+        if (!channel) return null;
+        Object.assign(channel, patch, { updatedAt: Date.now() });
+        return channel;
+    }
+
+    removeSubagentChannel(channelId) {
+        if (!channelId) return;
+        this.subagentChannels.delete(channelId);
+    }
+
+    getTimelineChannelsSnapshot() {
+        const channels = [
+            {
+                id: 'main',
+                name: '主线程',
+                type: 'main',
+                status: 'running',
+                createdAt: 0,
+                updatedAt: Date.now()
+            }
+        ];
+        for (const channel of this.subagentChannels.values()) {
+            channels.push({ ...channel });
+        }
+        return channels;
+    }
+
+    async acquireSubagentSlot() {
+        if (this.subagentActiveCount < this.maxSubagentConcurrency) {
+            this.subagentActiveCount += 1;
+            return { queued: false };
+        }
+        await new Promise((resolve) => {
+            this.subagentWaitQueue.push(resolve);
+        });
+        this.subagentActiveCount += 1;
+        return { queued: true };
+    }
+
+    releaseSubagentSlot() {
+        this.subagentActiveCount = Math.max(0, this.subagentActiveCount - 1);
+        const next = this.subagentWaitQueue.shift();
+        if (typeof next === 'function') {
+            next();
+        }
+    }
+
+    createBackgroundTask({ prompt, description, relatedTaskId, kind = 'task' } = {}) {
+        const now = Date.now();
+        const taskId = `bg-${now}-${this.nextBackgroundTaskSeq++}`;
+        const record = {
+            taskId,
+            kind: String(kind || 'task'),
+            status: 'queued',
+            promptSummary: this.summarizeText(prompt || '', 120),
+            description: this.summarizeText(description || '', 72),
+            relatedTaskId: relatedTaskId ?? null,
+            channelId: '',
+            channelName: '',
+            summary: '',
+            rawText: '',
+            error: '',
+            rounds: 0,
+            toolCalls: 0,
+            stoppedByRoundLimit: false,
+            createdAt: now,
+            startedAt: null,
+            finishedAt: null,
+            updatedAt: now
+        };
+        this.backgroundTasks.set(taskId, record);
+        while (this.backgroundTasks.size > this.maxBackgroundTaskHistory) {
+            const oldestTaskId = this.backgroundTasks.keys().next().value;
+            if (!oldestTaskId) break;
+            this.backgroundTasks.delete(oldestTaskId);
+        }
+        return record;
+    }
+
+    updateBackgroundTask(taskId, patch = {}) {
+        const record = this.backgroundTasks.get(taskId);
+        if (!record) return null;
+        Object.assign(record, patch, { updatedAt: Date.now() });
+        return record;
+    }
+
+    buildBackgroundTaskSnapshot(record, options = {}) {
+        if (!record) return null;
+        const includeRawText = options.includeRawText === true;
+        return {
+            taskId: record.taskId,
+            kind: record.kind || 'task',
+            status: record.status,
+            promptSummary: record.promptSummary,
+            description: record.description,
+            relatedTaskId: record.relatedTaskId,
+            channelId: record.channelId,
+            channelName: record.channelName,
+            summary: record.summary,
+            ...(includeRawText ? { rawText: record.rawText } : {}),
+            error: record.error,
+            rounds: record.rounds,
+            toolCalls: record.toolCalls,
+            stoppedByRoundLimit: record.stoppedByRoundLimit,
+            createdAt: record.createdAt,
+            startedAt: record.startedAt,
+            finishedAt: record.finishedAt,
+            updatedAt: record.updatedAt
+        };
+    }
+
+    startBackgroundCommandTask({ command } = {}) {
+        const normalizedCommand = String(command || '').trim();
+        if (!normalizedCommand) {
+            throw new Error('background_run.command 不能为空');
+        }
+
+        const record = this.createBackgroundTask({
+            prompt: normalizedCommand,
+            description: 'background_run',
+            relatedTaskId: this.activeTask?.id ?? null,
+            kind: 'command'
+        });
+        const startedAt = Date.now();
+        this.updateBackgroundTask(record.taskId, {
+            status: 'running',
+            startedAt
+        });
+        const child = spawn('powershell.exe', ['-NoProfile', '-Command', normalizedCommand], {
+            cwd: config.projectRoot || process.cwd(),
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const maxOutputChars = 50000;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            try {
+                child.kill();
+            } catch (error) {
+                // ignore
+            }
+        }, 300000);
+
+        child.stdout.on('data', (chunk) => {
+            stdout += String(chunk || '');
+            if (stdout.length > maxOutputChars) {
+                stdout = stdout.slice(0, maxOutputChars);
+            }
+        });
+        child.stderr.on('data', (chunk) => {
+            stderr += String(chunk || '');
+            if (stderr.length > maxOutputChars) {
+                stderr = stderr.slice(0, maxOutputChars);
+            }
+        });
+
+        child.on('close', (code) => {
+            clearTimeout(timeout);
+            const output = `${stdout}${stderr}`.trim();
+            const finishedAt = Date.now();
+            const hasError = !timedOut && Number(code) !== 0;
+            const status = timedOut ? 'timeout' : (hasError ? 'error' : 'completed');
+            const errorMessage = hasError ? `Command exited with code ${code}` : '';
+            const summaryBase = output || errorMessage || (timedOut ? 'Error: Timeout (300s)' : '(no output)');
+            const snapshot = this.updateBackgroundTask(record.taskId, {
+                status,
+                summary: this.summarizeText(summaryBase, 180),
+                rawText: output || (timedOut ? 'Error: Timeout (300s)' : ''),
+                error: errorMessage,
+                finishedAt
+            });
+            this.enqueueBackgroundNotification(snapshot);
+            this.emitUiHistoryUpdate();
+        });
+
+        child.on('error', (error) => {
+            clearTimeout(timeout);
+            const finishedAt = Date.now();
+            const snapshot = this.updateBackgroundTask(record.taskId, {
+                status: 'error',
+                summary: this.summarizeText(error?.message || String(error), 180),
+                rawText: '',
+                error: String(error?.message || error || 'unknown error'),
+                finishedAt
+            });
+            this.enqueueBackgroundNotification(snapshot);
+            this.emitUiHistoryUpdate();
+        });
+
+        return this.buildBackgroundTaskSnapshot(record);
+    }
+
+    enqueueBackgroundNotification(record) {
+        if (!record) return;
+        const headline = record.status === 'completed'
+            ? this.summarizeText(record.summary || record.rawText || '', 180)
+            : this.summarizeText(record.error || '后台任务执行失败', 180);
+        this.backgroundTaskNotifications.push({
+            taskId: record.taskId,
+            status: record.status,
+            channelName: record.channelName,
+            headline: headline || '(no summary)',
+            finishedAt: record.finishedAt || Date.now()
+        });
+        while (this.backgroundTaskNotifications.length > this.maxBackgroundTaskNotifications) {
+            this.backgroundTaskNotifications.shift();
+        }
+    }
+
+    drainBackgroundNotifications() {
+        if (!this.backgroundTaskNotifications.length) return [];
+        const notifications = this.backgroundTaskNotifications.map((item) => ({ ...item }));
+        this.backgroundTaskNotifications = [];
+        return notifications;
+    }
+
+    checkBackgroundTasks({ taskId } = {}) {
+        const normalizedTaskId = String(taskId || '').trim();
+        if (normalizedTaskId) {
+            const record = this.backgroundTasks.get(normalizedTaskId);
+            if (!record) {
+                return {
+                    ok: false,
+                    error: `Unknown background task: ${normalizedTaskId}`
+                };
+            }
+            return {
+                ok: true,
+                task: this.buildBackgroundTaskSnapshot(record, { includeRawText: true })
+            };
+        }
+
+        const tasks = Array.from(this.backgroundTasks.values())
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+            .slice(0, 20)
+            .map((record) => this.buildBackgroundTaskSnapshot(record));
+        return {
+            ok: true,
+            total: this.backgroundTasks.size,
+            tasks
+        };
+    }
+
+    async executeSubagentTask({ normalizedPrompt, description, relatedTaskId, backgroundTaskId } = {}) {
+        const channel = this.createSubagentChannel({
+            description,
+            prompt: normalizedPrompt
+        });
+        if (backgroundTaskId) {
+            this.updateBackgroundTask(backgroundTaskId, {
+                channelId: channel.id,
+                channelName: channel.name
+            });
+        }
+        this.appendTimelineEvent({
+            lane: 'tool',
+            kind: 'task',
+            status: 'queued',
+            title: 'task',
+            detail: `创建子 Agent：${channel.name}`,
+            channelId: channel.id,
+            channelName: channel.name,
+            relatedTaskId: relatedTaskId ?? null,
+            createdAt: Date.now(),
+            startedAt: Date.now(),
+            durationMs: 180
+        });
+        this.emitUiHistoryUpdate();
+
+        let acquired = false;
+        const startedAt = Date.now();
+        try {
+            await this.acquireSubagentSlot();
+            acquired = true;
+            if (backgroundTaskId) {
+                this.updateBackgroundTask(backgroundTaskId, {
+                    status: 'running',
+                    startedAt
+                });
+            }
+            this.updateSubagentChannel(channel.id, { status: 'running' });
+            this.appendTimelineEvent({
+                lane: 'tool',
+                kind: 'task-running',
+                status: 'running',
+                title: 'task',
+                detail: `子 Agent 开始执行：${channel.name}`,
+                channelId: channel.id,
+                channelName: channel.name,
+                relatedTaskId: relatedTaskId ?? null,
+                createdAt: Date.now(),
+                startedAt: Date.now(),
+                durationMs: 160
+            });
+            this.emitUiHistoryUpdate();
+
+            const subagentResult = await this.llmService.runSubagentTask(normalizedPrompt, {
+                timelineContext: {
+                    channelId: channel.id,
+                    channelName: channel.name
+                }
+            });
+            const summary = String(subagentResult?.summary || '').trim() || '(no summary)';
+            const finishedAt = Date.now();
+            this.appendTimelineEvent({
+                lane: 'tool',
+                kind: 'task-finish',
+                status: 'done',
+                title: 'task',
+                detail: this.summarizeText(summary, 96),
+                channelId: channel.id,
+                channelName: channel.name,
+                relatedTaskId: relatedTaskId ?? null,
+                createdAt: finishedAt,
+                startedAt,
+                durationMs: finishedAt - startedAt,
+                result: {
+                    rounds: Number(subagentResult?.rounds || 0),
+                    toolCalls: Number(subagentResult?.toolCalls || 0),
+                    stoppedByRoundLimit: Boolean(subagentResult?.stoppedByRoundLimit)
+                }
+            });
+            if (backgroundTaskId) {
+                const record = this.updateBackgroundTask(backgroundTaskId, {
+                    status: 'completed',
+                    summary,
+                    rawText: String(subagentResult?.rawText || ''),
+                    rounds: Number(subagentResult?.rounds || 0),
+                    toolCalls: Number(subagentResult?.toolCalls || 0),
+                    stoppedByRoundLimit: Boolean(subagentResult?.stoppedByRoundLimit),
+                    finishedAt
+                });
+                this.enqueueBackgroundNotification(record);
+            }
+            return {
+                summary,
+                channelName: channel.name,
+                channelId: channel.id,
+                rounds: Number(subagentResult?.rounds || 0),
+                toolCalls: Number(subagentResult?.toolCalls || 0)
+            };
+        } catch (error) {
+            const finishedAt = Date.now();
+            this.appendTimelineEvent({
+                lane: 'tool',
+                kind: 'task-error',
+                status: 'error',
+                title: 'task',
+                detail: this.summarizeText(error?.message || String(error), 96),
+                channelId: channel.id,
+                channelName: channel.name,
+                relatedTaskId: relatedTaskId ?? null,
+                createdAt: finishedAt,
+                startedAt,
+                durationMs: finishedAt - startedAt
+            });
+            if (backgroundTaskId) {
+                const record = this.updateBackgroundTask(backgroundTaskId, {
+                    status: 'error',
+                    error: String(error?.message || error || 'unknown error'),
+                    finishedAt
+                });
+                this.enqueueBackgroundNotification(record);
+            }
+            throw error;
+        } finally {
+            this.removeSubagentChannel(channel.id);
+            if (acquired) {
+                this.releaseSubagentSlot();
+            }
+            this.emitUiHistoryUpdate();
+        }
+    }
+
+    startBackgroundSubagentTask({ normalizedPrompt, description, relatedTaskId } = {}) {
+        const record = this.createBackgroundTask({
+            prompt: normalizedPrompt,
+            description,
+            relatedTaskId
+        });
+        this.executeSubagentTask({
+            normalizedPrompt,
+            description,
+            relatedTaskId,
+            backgroundTaskId: record.taskId
+        }).catch(() => {
+            // Background errors are persisted in task record and notification queue.
+        });
+        return this.buildBackgroundTaskSnapshot(record);
     }
 
     clampChatRecords() {
@@ -203,6 +640,8 @@ class AgentRuntime {
             id: `timeline-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
             seq: ++this.timelineSeq,
             lane: event.lane || 'tool',
+            channelId: event.channelId || 'main',
+            channelName: this.summarizeText(event.channelName || '', 42),
             kind: event.kind || 'event',
             status: event.status || 'done',
             title: this.summarizeText(event.title || '运行时事件', 40),
@@ -317,6 +756,13 @@ class AgentRuntime {
                 activeType: this.activeTask ? this.activeTask.type : null,
                 queueLength: this.taskQueue.length
             },
+            subagent: {
+                limit: this.maxSubagentConcurrency,
+                running: this.subagentActiveCount,
+                queued: this.subagentWaitQueue.length,
+                channelCount: this.subagentChannels.size
+            },
+            timelineChannels: this.getTimelineChannelsSnapshot(),
             realtimePerception: { ...this.latestPerceptionState },
             recentPerceptions: this.recentPerceptions.map((entry) => ({ ...entry })),
             panelNote: this.latestPanelNote,
@@ -330,6 +776,10 @@ class AgentRuntime {
                 : [],
             history: this.uiHistory.map((entry) => ({ ...entry })),
             timeline: this.timelineEvents.map((entry) => ({ ...entry }))
+            ,
+            compaction: this.latestCompactionBoundary
+                ? { ...this.latestCompactionBoundary }
+                : null
         };
     }
 
@@ -357,6 +807,12 @@ class AgentRuntime {
         return {
             activeTaskType: this.activeTask ? this.activeTask.type : null,
             queueLength: this.taskQueue.length,
+            subagent: {
+                limit: this.maxSubagentConcurrency,
+                running: this.subagentActiveCount,
+                queued: this.subagentWaitQueue.length,
+                channelCount: this.subagentChannels.size
+            },
             latestPerceptionState: { ...this.latestPerceptionState },
             panelNote: this.latestPanelNote,
             nextWakeAt: this.nextAutonomousWakeAt,
@@ -521,6 +977,161 @@ class AgentRuntime {
         );
     }
 
+    normalizeListenSeconds(seconds) {
+        return Math.min(10, Math.max(1, Number(seconds) || 4));
+    }
+
+    createListenBucket() {
+        return {
+            finalSegments: [],
+            partial: '',
+            errors: []
+        };
+    }
+
+    buildListenText(bucket) {
+        const finals = Array.isArray(bucket?.finalSegments)
+            ? bucket.finalSegments.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        if (finals.length) {
+            return finals.join('\n');
+        }
+        return String(bucket?.partial || '').trim();
+    }
+
+    applyListenAsrEvent(bucket, event = {}) {
+        const eventType = String(event?.type || '').trim();
+        if (!eventType || !bucket) return;
+        if (eventType === 'result') {
+            const text = String(event?.text || '').trim();
+            if (!text) return;
+            if (event?.isFinal) {
+                bucket.finalSegments.push(text);
+                bucket.partial = '';
+            } else {
+                bucket.partial = text;
+            }
+            return;
+        }
+        if (eventType === 'error') {
+            const message = String(event?.message || '').trim();
+            if (message) {
+                bucket.errors.push(message);
+            }
+        }
+    }
+
+    async listenAndTranscribeAudioChannels({ seconds } = {}) {
+        const listenSeconds = this.normalizeListenSeconds(seconds);
+        if (!this.listenCaptureService) {
+            throw new Error('listen 捕获服务未初始化');
+        }
+        if (!this.createRealtimeAsrService) {
+            throw new Error('listen ASR 会话工厂未初始化');
+        }
+
+        const systemBucket = this.createListenBucket();
+        const micBucket = this.createListenBucket();
+        const systemAsr = this.createRealtimeAsrService();
+        const micAsr = this.createRealtimeAsrService();
+
+        let systemStarted = false;
+        let micStarted = false;
+        try {
+            await systemAsr.startSession({
+                format: 'pcm',
+                sampleRate: 16000,
+                onEvent: (event) => this.applyListenAsrEvent(systemBucket, event)
+            });
+            systemStarted = true;
+            await micAsr.startSession({
+                format: 'pcm',
+                sampleRate: 16000,
+                onEvent: (event) => this.applyListenAsrEvent(micBucket, event)
+            });
+            micStarted = true;
+        } catch (startError) {
+            if (systemStarted) {
+                await systemAsr.abortSession().catch(() => {});
+            }
+            if (micStarted) {
+                await micAsr.abortSession().catch(() => {});
+            }
+            throw startError;
+        }
+        let captureResult = null;
+        try {
+            captureResult = await this.listenCaptureService.captureSeparateAudio({
+                seconds: listenSeconds,
+                sampleRate: 16000,
+                onFrame: (source, frame) => {
+                    if (!frame) return;
+                    if (source === 'system') {
+                        systemAsr.sendAudioFrame(frame);
+                        return;
+                    }
+                    if (source === 'mic') {
+                        micAsr.sendAudioFrame(frame);
+                    }
+                }
+            });
+            const systemFrames = Number(captureResult?.frameCount?.system || 0);
+            const micFrames = Number(captureResult?.frameCount?.mic || 0);
+            if (systemFrames <= 0 || micFrames <= 0) {
+                const captureStatus = String(captureResult?.lastStatus || '').trim();
+                throw new Error(
+                    `listen 采集异常：system_frames=${systemFrames}, mic_frames=${micFrames}`
+                    + (captureStatus ? `, status=${captureStatus}` : '')
+                );
+            }
+        } finally {
+            const stopResults = await Promise.allSettled([
+                systemAsr.stopSession(),
+                micAsr.stopSession()
+            ]);
+            if (stopResults[0]?.status === 'rejected') {
+                await systemAsr.abortSession().catch(() => {});
+            }
+            if (stopResults[1]?.status === 'rejected') {
+                await micAsr.abortSession().catch(() => {});
+            }
+        }
+
+        const systemText = this.buildListenText(systemBucket);
+        const micText = this.buildListenText(micBucket);
+        const summaryParts = [];
+        if (systemText) summaryParts.push(`system: ${this.summarizeText(systemText, 80)}`);
+        if (micText) summaryParts.push(`mic: ${this.summarizeText(micText, 80)}`);
+        if (summaryParts.length === 0) {
+            summaryParts.push('未识别到有效语音');
+        }
+
+        return {
+            seconds: listenSeconds,
+            summary: summaryParts.join(' | '),
+            system: {
+                text: systemText,
+                segments: systemBucket.finalSegments,
+                partial: systemBucket.partial,
+                errors: systemBucket.errors,
+                hasSpeech: Boolean(systemText)
+            },
+            mic: {
+                text: micText,
+                segments: micBucket.finalSegments,
+                partial: micBucket.partial,
+                errors: micBucket.errors,
+                hasSpeech: Boolean(micText)
+            },
+            capture: captureResult || {
+                ok: true,
+                reason: 'unknown',
+                frameCount: { system: 0, mic: 0 },
+                elapsedMs: Math.round(listenSeconds * 1000)
+            }
+        };
+    }
+
     scheduleAutonomousWake(seconds) {
         const normalizedSeconds = this.normalizeSleepSeconds(seconds);
         this.clearAutonomousWakeTimer('reschedule');
@@ -601,10 +1212,6 @@ class AgentRuntime {
         const response = await this.llmService.chatWithCompanion(prompt, {
             inputType: 'perception'
         });
-
-        if (!response?.handledByAgentTools && String(response?.text || '').trim()) {
-            await this.enqueueTtsJob(response);
-        }
         if (!this.nextAutonomousWakeAt) {
             this.scheduleAutonomousWake(response?.sleepSeconds);
         }
@@ -614,7 +1221,7 @@ class AgentRuntime {
         const analysisSummary = this.summarizeText(observedState);
         const responseSummary = this.summarizeText(responseText);
         this.appendPerceptionSnapshot({
-            status: response?.handledByAgentTools ? 'done' : (responseText ? 'spoken' : 'done'),
+            status: response?.spoke ? 'spoken' : 'done',
             summary: responseSummary || analysisSummary || '完成一次后台感知',
             detail: observedState || responseText || ''
         });
@@ -639,10 +1246,6 @@ class AgentRuntime {
         const responseText = response?.text || '';
         const mergedSummary = this.summarizeText(mergedText);
         const responseSummary = this.summarizeText(responseText);
-
-        if (!response?.handledByAgentTools && String(responseText).trim()) {
-            await this.enqueueTtsJob(response);
-        }
 
         this.updateHistoryEntry(task.id, {
             status: 'done',
@@ -782,6 +1385,7 @@ class AgentRuntime {
         const phase = String(status || 'running');
         const speakText = this.summarizeText(args?.text || '', 52);
         const sleepSeconds = Number(args?.seconds || 0);
+        const listenSeconds = Number(args?.seconds || 0);
         const base = {
             running: `Agent 正在执行 ${name}...`,
             done: `Agent 已完成 ${name}`,
@@ -793,6 +1397,9 @@ class AgentRuntime {
             if (name === 'look') return 'Agent 正在立即确认最新屏幕状态...';
             if (name === 'speak') return speakText ? `Agent 准备播报：${speakText}` : 'Agent 正在准备播报...';
             if (name === 'sleep') return sleepSeconds > 0 ? `Agent 准备进入休眠 ${sleepSeconds} 秒` : 'Agent 准备安排下一次休眠';
+            if (name === 'listen') return listenSeconds > 0
+                ? `Agent 正在监听系统音频与麦克风（${Math.min(10, Math.max(1, listenSeconds))} 秒）...`
+                : 'Agent 正在监听系统音频与麦克风...';
             return base.running;
         }
 
@@ -812,12 +1419,27 @@ class AgentRuntime {
 
     createRuntimeAdapters() {
         return {
-            onToolTimeline: ({ tool, kind, status, detail, createdAt, startedAt, durationMs, args, result } = {}) => {
+            onToolTimeline: ({
+                tool,
+                kind,
+                status,
+                detail,
+                createdAt,
+                startedAt,
+                durationMs,
+                args,
+                result,
+                channelId,
+                channelName
+            } = {}) => {
                 const normalizedStatus = status || 'done';
                 const speakText = String(result?.text || args?.text || '').trim();
                 const normalizedKind = kind || tool || 'tool';
+                const effectiveChannelId = channelId || 'main';
+                const effectiveChannelName = channelName || '';
+                const isMainChannel = effectiveChannelId === 'main';
 
-                if (normalizedKind === 'speak' && normalizedStatus === 'running') {
+                if (normalizedKind === 'speak' && normalizedStatus === 'running' && isMainChannel) {
                     const projectedStartAt = Number(startedAt) || Date.now();
                     const projectedDurationMs = Math.max(
                         800,
@@ -845,6 +1467,8 @@ class AgentRuntime {
                     let shouldAppendTimelineEvent = true;
                     const eventPayload = {
                         lane: 'tool',
+                        channelId: effectiveChannelId,
+                        channelName: effectiveChannelName,
                         kind: normalizedKind,
                         status: normalizedStatus,
                         title: tool || kind || 'tool',
@@ -876,7 +1500,7 @@ class AgentRuntime {
                         }
                     }
                     if (normalizedKind === 'speak') {
-                        const updated = this.finalizeProjectedTimelineEvent('speak', {
+                        const updated = isMainChannel && this.finalizeProjectedTimelineEvent('speak', {
                             status: normalizedStatus,
                             detail: detail || this.summarizeText(speakText, 72),
                             createdAt: eventCreatedAt,
@@ -889,12 +1513,12 @@ class AgentRuntime {
                         const appendedEvent = this.appendTimelineEvent({
                             ...eventPayload
                         });
-                        if (normalizedKind === 'sleep' && normalizedStatus === 'done') {
+                        if (isMainChannel && normalizedKind === 'sleep' && normalizedStatus === 'done') {
                             this.setProjectedTimelineEventId('sleep', appendedEvent.id);
                         }
                     }
                 }
-                if (tool === 'speak' && speakText) {
+                if (isMainChannel && tool === 'speak' && speakText) {
                     const matchingSpeakRecord = this.findLatestMatchingChatRecord((entry) => (
                         entry?.role === 'assistant' &&
                         entry?.kind === 'speak' &&
@@ -959,7 +1583,53 @@ class AgentRuntime {
                         });
                     }
                 }
-                this.updatePanelNote(this.buildToolPanelNote({ tool, status, args, detail }), { emit: false });
+                if (isMainChannel) {
+                    this.updatePanelNote(this.buildToolPanelNote({ tool, status, args, detail }), { emit: false });
+                }
+                this.emitUiHistoryUpdate();
+            },
+            onCompactionBoundary: ({
+                compactId,
+                mode,
+                generation,
+                transcriptPath,
+                handoffPath,
+                summaryText,
+                createdAt
+            } = {}) => {
+                const now = Date.now();
+                const detail = [
+                    `mode=${mode || 'summary'}`,
+                    `generation=${Number(generation || 1)}`,
+                    compactId ? `compactId=${compactId}` : '',
+                    transcriptPath ? `transcript=${transcriptPath}` : '',
+                    handoffPath ? `handoff=${handoffPath}` : ''
+                ].filter(Boolean).join(' | ');
+                this.latestCompactionBoundary = {
+                    compactId: String(compactId || ''),
+                    mode: String(mode || 'summary'),
+                    generation: Number(generation || 1),
+                    transcriptPath: String(transcriptPath || ''),
+                    handoffPath: String(handoffPath || ''),
+                    summaryPreview: this.summarizeText(summaryText || '', 140),
+                    createdAt: Number(createdAt || now)
+                };
+                this.appendTimelineEvent({
+                    lane: 'memory',
+                    kind: 'compaction_boundary',
+                    status: 'done',
+                    title: 'compact',
+                    detail: detail || 'context compacted',
+                    relatedTaskId: this.activeTask?.id ?? null,
+                    createdAt: Number(createdAt || now),
+                    startedAt: Number(createdAt || now),
+                    durationMs: 120,
+                    result: {
+                        mode: String(mode || 'summary'),
+                        compactId: String(compactId || ''),
+                        generation: Number(generation || 1)
+                    }
+                });
                 this.emitUiHistoryUpdate();
             },
             detect: async () => {
@@ -1000,6 +1670,61 @@ class AgentRuntime {
                     sleepSeconds: normalizedSeconds,
                     wakeAt: Date.now() + normalizedSeconds * 1000
                 });
+            },
+            listen: async ({ seconds } = {}) => {
+                return this.listenAndTranscribeAudioChannels({ seconds });
+            },
+            task: async ({ prompt, description, wait } = {}) => {
+                const normalizedPrompt = String(prompt || '').trim();
+                if (!normalizedPrompt) {
+                    throw new Error('task.prompt 不能为空');
+                }
+                const shouldWait = wait !== false;
+                const relatedTaskId = this.activeTask?.id ?? null;
+                if (shouldWait) {
+                    return this.executeSubagentTask({
+                        normalizedPrompt,
+                        description,
+                        relatedTaskId
+                    });
+                }
+                const snapshot = this.startBackgroundSubagentTask({
+                    normalizedPrompt,
+                    description,
+                    relatedTaskId
+                });
+                return {
+                    accepted: true,
+                    mode: 'background',
+                    taskId: snapshot?.taskId || '',
+                    status: snapshot?.status || 'queued',
+                    message: `Background task ${snapshot?.taskId || ''} started`,
+                    task: snapshot
+                };
+            },
+            compact: async ({ focus } = {}) => {
+                return {
+                    requested: true,
+                    mode: 'summary',
+                    focus: String(focus || '').trim()
+                };
+            },
+            backgroundRun: async ({ command } = {}) => {
+                const snapshot = this.startBackgroundCommandTask({ command });
+                return {
+                    accepted: true,
+                    mode: 'background_command',
+                    taskId: snapshot?.taskId || '',
+                    status: snapshot?.status || 'queued',
+                    command: snapshot?.promptSummary || '',
+                    task: snapshot
+                };
+            },
+            checkBackground: ({ task_id } = {}) => {
+                return this.checkBackgroundTasks({ taskId: task_id });
+            },
+            drainBackgroundNotifications: () => {
+                return this.drainBackgroundNotifications();
             }
         };
     }

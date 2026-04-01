@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const config = require('../../config/runtimeConfig');
+const { getToolDescriptionConfig } = require('../../config/toolDescriptionConfig');
 
 const WORKDIR = path.resolve(config.projectRoot || process.cwd());
 const MAX_OUTPUT_CHARS = 50000;
@@ -113,18 +114,20 @@ function runEdit(pathArg, oldText, newText) {
 }
 
 function createGetCurrentTime() {
+    const descriptionConfig = getToolDescriptionConfig('get_current_time');
     return {
+        subagentEnabled: true,
         definition: {
             type: 'function',
             function: {
                 name: 'get_current_time',
-                description: '当你需要知道当前日期、时间、星期或时区时使用。',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         timezone: {
                             type: 'string',
-                            description: 'IANA 时区名称，例如 Asia/Hong_Kong。留空时使用系统本地时区。'
+                            description: descriptionConfig.parameters?.timezone?.description || ''
                         }
                     },
                     required: []
@@ -163,22 +166,24 @@ function createGetCurrentTime() {
 }
 
 function createGetLive2DModelInfo({ live2dModelService }) {
+    const descriptionConfig = getToolDescriptionConfig('get_live2d_model_info');
     return {
+        subagentEnabled: true,
         definition: {
             type: 'function',
             function: {
                 name: 'get_live2d_model_info',
-                description: '查询当前 Live2D 模型的路径、可用动作、表情和默认回退动作。',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         include_motions: {
                             type: 'boolean',
-                            description: '是否返回完整动作列表。默认 true。'
+                            description: descriptionConfig.parameters?.include_motions?.description || ''
                         },
                         include_expressions: {
                             type: 'boolean',
-                            description: '是否返回完整表情列表。默认 true。'
+                            description: descriptionConfig.parameters?.include_expressions?.description || ''
                         }
                     },
                     required: []
@@ -204,18 +209,20 @@ function createGetLive2DModelInfo({ live2dModelService }) {
 }
 
 function createBashTool() {
+    const descriptionConfig = getToolDescriptionConfig('bash');
     return {
+        subagentEnabled: true,
         definition: {
             type: 'function',
             function: {
                 name: 'bash',
-                description: 'Run a shell command in the Windows workspace using PowerShell.',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         command: {
                             type: 'string',
-                            description: 'PowerShell command to execute.'
+                            description: descriptionConfig.parameters?.command?.description || ''
                         }
                     },
                     required: ['command']
@@ -227,22 +234,24 @@ function createBashTool() {
 }
 
 function createReadFileTool() {
+    const descriptionConfig = getToolDescriptionConfig('read_file');
     return {
+        subagentEnabled: true,
         definition: {
             type: 'function',
             function: {
                 name: 'read_file',
-                description: 'Read file contents from workspace path.',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         path: {
                             type: 'string',
-                            description: 'Path relative to workspace root.'
+                            description: descriptionConfig.parameters?.path?.description || ''
                         },
                         limit: {
                             type: 'integer',
-                            description: 'Optional max lines to return.'
+                            description: descriptionConfig.parameters?.limit?.description || ''
                         }
                     },
                     required: ['path']
@@ -254,22 +263,24 @@ function createReadFileTool() {
 }
 
 function createWriteFileTool() {
+    const descriptionConfig = getToolDescriptionConfig('write_file');
     return {
+        subagentEnabled: true,
         definition: {
             type: 'function',
             function: {
                 name: 'write_file',
-                description: 'Write full content to a file under workspace path.',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         path: {
                             type: 'string',
-                            description: 'Path relative to workspace root.'
+                            description: descriptionConfig.parameters?.path?.description || ''
                         },
                         content: {
                             type: 'string',
-                            description: 'File content to write.'
+                            description: descriptionConfig.parameters?.content?.description || ''
                         }
                     },
                     required: ['path', 'content']
@@ -281,26 +292,28 @@ function createWriteFileTool() {
 }
 
 function createEditFileTool() {
+    const descriptionConfig = getToolDescriptionConfig('edit_file');
     return {
+        subagentEnabled: true,
         definition: {
             type: 'function',
             function: {
                 name: 'edit_file',
-                description: 'Replace exact text once in a file under workspace path.',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         path: {
                             type: 'string',
-                            description: 'Path relative to workspace root.'
+                            description: descriptionConfig.parameters?.path?.description || ''
                         },
                         old_text: {
                             type: 'string',
-                            description: 'Exact text to find.'
+                            description: descriptionConfig.parameters?.old_text?.description || ''
                         },
                         new_text: {
                             type: 'string',
-                            description: 'Replacement text.'
+                            description: descriptionConfig.parameters?.new_text?.description || ''
                         }
                     },
                     required: ['path', 'old_text', 'new_text']
@@ -311,9 +324,73 @@ function createEditFileTool() {
     };
 }
 
+function createBackgroundRunTool({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('background_run');
+    return {
+        subagentEnabled: true,
+        definition: {
+            type: 'function',
+            function: {
+                name: 'background_run',
+                description: descriptionConfig.description,
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        command: {
+                            type: 'string',
+                            description: descriptionConfig.parameters?.command?.description || ''
+                        }
+                    },
+                    required: ['command']
+                }
+            }
+        },
+        execute: async (argumentsObject = {}) => {
+            const adapters = getRuntimeAdapters();
+            if (typeof adapters.backgroundRun !== 'function') {
+                throw new Error('backgroundRun adapter is not configured');
+            }
+            return adapters.backgroundRun(argumentsObject);
+        }
+    };
+}
+
+function createCheckBackgroundTool({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('check_background');
+    return {
+        subagentEnabled: true,
+        definition: {
+            type: 'function',
+            function: {
+                name: 'check_background',
+                description: descriptionConfig.description,
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        task_id: {
+                            type: 'string',
+                            description: descriptionConfig.parameters?.task_id?.description || ''
+                        }
+                    },
+                    required: []
+                }
+            }
+        },
+        execute: async (argumentsObject = {}) => {
+            const adapters = getRuntimeAdapters();
+            if (typeof adapters.checkBackground !== 'function') {
+                throw new Error('checkBackground adapter is not configured');
+            }
+            return adapters.checkBackground(argumentsObject);
+        }
+    };
+}
+
 function createSystemTools(dependencies) {
     return [
         createBashTool(dependencies),
+        createBackgroundRunTool(dependencies),
+        createCheckBackgroundTool(dependencies),
         createReadFileTool(dependencies),
         createWriteFileTool(dependencies),
         createEditFileTool(dependencies),

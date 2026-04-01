@@ -4,7 +4,10 @@
   "private": true,
   "main": "src/core/main.js",
   "scripts": {
-    "start": "chcp 65001 && electron .",
+    "build:panel": "vite build --config vite.panel.config.mjs",
+    "start": "chcp 65001 && npm run build:panel && electron .",
+    "listen:selftest": "chcp 65001 && electron scripts/listen-e2e-selftest.js",
+    "tts:test": "node scripts/tts-stream-cli.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,12 +15,24 @@
   "license": "ISC",
   "description": "",
   "devDependencies": {
-    "electron": "^40.1.0"
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "electron": "^40.1.0",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3"
   },
   "dependencies": {
+    "@photostructure/sqlite": "^1.1.0",
+    "@xenova/transformers": "^2.17.2",
+    "cytoscape": "^3.33.1",
     "dotenv": "^17.2.3",
     "ffmpeg-static": "^5.3.0",
+    "lunr": "^2.3.9",
     "openai": "^6.17.0",
-    "sharp": "^0.34.5"
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "sharp": "^0.34.5",
+    "ws": "^8.20.0"
   }
 }

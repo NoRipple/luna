@@ -3,3 +3,5 @@ node_modules/
 dist/
 .DS_Store
 Thumbs.db
+workspace/CompanionAgent/.memory-index/
+src/renderer/panel-build/

@@ -1,11 +1,13 @@
 /* 主要职责：作为 Electron 应用启动入口，负责装配窗口、IPC、TTS 队列、AgentRuntime 和 API 服务。 */
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, session, systemPreferences, desktopCapturer } = require('electron');
 const path = require('path');
 
 const llmService = require('../modules/thinking/LLMService');
 const ttsService = require('../modules/output/TTSService');
 const screenSensor = require('../modules/perception/ScreenSensor');
 const visionService = require('../modules/recognition/VisionService');
+const RealtimeAsrService = require('../modules/recognition/RealtimeAsrService');
+const ListenCaptureService = require('../modules/recognition/ListenCaptureService');
 const live2dModelService = require('../modules/output/Live2DModelService');
 const live2dModelCatalogService = require('../modules/output/Live2DModelCatalogService');
 const config = require('../config/runtimeConfig');
@@ -31,6 +33,45 @@ let latestUiPanelState = null;
 let uiStateVersion = 0;
 let uiPerfEmitSeq = 0;
 let lastUiPerfEmitAt = 0;
+
+function configureMediaPermissions() {
+    const defaultSession = session?.defaultSession;
+    if (!defaultSession) return;
+
+    const allowMediaPermission = (permission, details = {}) => {
+        const normalized = String(permission || '').toLowerCase();
+        if (normalized === 'microphone' || normalized === 'camera') {
+            return true;
+        }
+        if (normalized === 'display-capture' || normalized === 'desktop-capture') {
+            return true;
+        }
+        if (normalized !== 'media') {
+            return false;
+        }
+        const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : [];
+        if (mediaTypes.length === 0) {
+            return true;
+        }
+        return mediaTypes.includes('audio');
+    };
+
+    if (typeof defaultSession.setPermissionRequestHandler === 'function') {
+        defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+            callback(allowMediaPermission(permission, details));
+        });
+    }
+
+    if (typeof defaultSession.setPermissionCheckHandler === 'function') {
+        defaultSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin, details) => {
+            return allowMediaPermission(permission, details);
+        });
+    }
+
+    if (process.platform === 'darwin' && systemPreferences?.askForMediaAccess) {
+        systemPreferences.askForMediaAccess('microphone').catch(() => {});
+    }
+}
 
 function ensureOverlayOnTop() {
     if (!overlayWindow || overlayWindow.isDestroyed()) return;
@@ -106,6 +147,17 @@ function getUiPanelStateSnapshot() {
     return latestUiPanelState;
 }
 
+function clearTaskGraphSafely(stage = 'unknown') {
+    try {
+        const result = llmService.clearTaskGraph ? llmService.clearTaskGraph() : { removed: 0, total: 0 };
+        const removed = Number(result?.removed || 0);
+        const total = Number(result?.total || 0);
+        console.log(`[TaskGraph] cleared stage=${stage} removed=${removed} total=${total}`);
+    } catch (error) {
+        console.warn(`[TaskGraph] clear failed stage=${stage}:`, error?.message || error);
+    }
+}
+
 function emitPanelVisibilityChanged(open) {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
         overlayWindow.webContents.send('panel-visibility-changed', { open: Boolean(open) });
@@ -123,8 +175,16 @@ const runtime = new AgentRuntime({
     buildSerializedLive2DCapabilities,
     getLive2DConfigFallback,
     enqueueTtsJob,
+    createRealtimeAsrService: () => new RealtimeAsrService(config.asr || {}),
+    listenCaptureService: new ListenCaptureService({
+        BrowserWindow,
+        ipcMain,
+        desktopCapturer,
+        projectRoot: config.projectRoot
+    }),
     onStateChanged: commitUiPanelState
 });
+const realtimeAsrService = new RealtimeAsrService(config.asr || {});
 
 function startGlobalMouseTracking() {
     if (globalMouseTimer) return;
@@ -463,26 +523,33 @@ registerIpcHandlers({
     buildSerializedLive2DCapabilities,
     getLive2DConfigFallback,
     llmService,
-    enqueueTtsJob
+    enqueueTtsJob,
+    realtimeAsrService
 });
 
 app.on('ready', () => {
+    configureMediaPermissions();
+    if (config.taskGraph?.clearOnStartup !== false) {
+        clearTaskGraphSafely('startup');
+    }
     commitUiPanelState(runtime.buildUiPanelState());
     runtime.bindTodoStateUpdates();
     llmService.configureRuntimeAdapters(runtime.createRuntimeAdapters());
     createOverlayWindow();
     startBackgroundPerceptionLoop();
-    runtime.enqueueAutonomousTask('boot');
     apiServer = startApiServer({
         llmService,
         getOverlayWindow: () => overlayWindow
     });
+    runtime.enqueueAutonomousTask('boot');
 });
 
 app.on('window-all-closed', () => {
     stopGlobalMouseTracking();
     stopBackgroundPerceptionLoop();
+    runtime.listenCaptureService?.dispose?.();
     runtime.dispose();
+    realtimeAsrService.abortSession().catch(() => {});
     if (process.platform !== 'darwin') app.quit();
 });
 
@@ -495,7 +562,17 @@ app.on('activate', () => {
 app.on('before-quit', () => {
     stopGlobalMouseTracking();
     stopBackgroundPerceptionLoop();
+    runtime.listenCaptureService?.dispose?.();
     runtime.dispose();
+    realtimeAsrService.abortSession().catch(() => {});
+    try {
+        llmService.finalizeMemoryGraph?.();
+    } catch (error) {
+        console.warn('[GraphMemory] finalize failed:', error?.message || error);
+    }
+    if (config.taskGraph?.clearOnExit !== false) {
+        clearTaskGraphSafely('before-quit');
+    }
     if (apiServer && typeof apiServer.close === 'function') {
         apiServer.close();
     }

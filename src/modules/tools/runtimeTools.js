@@ -1,11 +1,15 @@
 /* 主要职责：集中定义 runtime 类工具并导出 createRuntimeTools。 */
+const { getToolDescriptionConfig } = require('../../config/toolDescriptionConfig');
+
 function createDetect({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('detect');
     return {
+        subagentEnabled: false,
         definition: {
             type: 'function',
             function: {
                 name: 'detect',
-                description: '获取当前环境状态摘要。该工具优先读取最近一次缓存状态，若缓存过期再执行截图与分析，适合常规状态感知。',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {},
@@ -24,12 +28,14 @@ function createDetect({ getRuntimeAdapters }) {
 }
 
 function createLook({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('look');
     return {
+        subagentEnabled: false,
         definition: {
             type: 'function',
             function: {
                 name: 'look',
-                description: '立即确认用户的最新屏幕状态。该工具会立刻截图并分析（绕过缓存），适合在关键时刻做实时复核。',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {},
@@ -48,26 +54,28 @@ function createLook({ getRuntimeAdapters }) {
 }
 
 function createSpeak({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('speak');
     return {
+        subagentEnabled: false,
         definition: {
             type: 'function',
             function: {
                 name: 'speak',
-                description: '与用户交互。该工具会完成文字播报、TTS 和 Live2D 动作表达。',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         text: {
                             type: 'string',
-                            description: '要说的话。'
+                            description: descriptionConfig.parameters?.text?.description || ''
                         },
                         motion: {
                             type: 'string',
-                            description: '可选动作名。'
+                            description: descriptionConfig.parameters?.motion?.description || ''
                         },
                         expression: {
                             type: 'string',
-                            description: '可选表情名。'
+                            description: descriptionConfig.parameters?.expression?.description || ''
                         }
                     },
                     required: ['text']
@@ -85,18 +93,20 @@ function createSpeak({ getRuntimeAdapters }) {
 }
 
 function createSleep({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('sleep');
     return {
+        subagentEnabled: false,
         definition: {
             type: 'function',
             function: {
                 name: 'sleep',
-                description: '安排下一次自主苏醒时间，单位为秒。建议范围 5 到 60 秒。',
+                description: descriptionConfig.description,
                 parameters: {
                     type: 'object',
                     properties: {
                         seconds: {
                             type: 'number',
-                            description: '希望休眠的秒数。建议在 5 到 60 之间。'
+                            description: descriptionConfig.parameters?.seconds?.description || ''
                         }
                     },
                     required: ['seconds']
@@ -113,12 +123,44 @@ function createSleep({ getRuntimeAdapters }) {
     };
 }
 
+function createListen({ getRuntimeAdapters }) {
+    const descriptionConfig = getToolDescriptionConfig('listen');
+    return {
+        subagentEnabled: false,
+        definition: {
+            type: 'function',
+            function: {
+                name: 'listen',
+                description: descriptionConfig.description,
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        seconds: {
+                            type: 'number',
+                            description: descriptionConfig.parameters?.seconds?.description || ''
+                        }
+                    },
+                    required: []
+                }
+            }
+        },
+        execute: async (argumentsObject = {}) => {
+            const adapters = getRuntimeAdapters();
+            if (typeof adapters.listen !== 'function') {
+                throw new Error('Listen adapter is not configured');
+            }
+            return adapters.listen(argumentsObject);
+        }
+    };
+}
+
 function createRuntimeTools(dependencies) {
     return [
         createDetect(dependencies),
         createLook(dependencies),
         createSpeak(dependencies),
-        createSleep(dependencies)
+        createSleep(dependencies),
+        createListen(dependencies)
     ];
 }
 

@@ -16,7 +16,8 @@ function registerIpcHandlers(deps) {
         buildSerializedLive2DCapabilities,
         getLive2DConfigFallback,
         llmService,
-        enqueueTtsJob
+        enqueueTtsJob,
+        realtimeAsrService
     } = deps;
 
     let dragStartPos = { x: 0, y: 0 };
@@ -116,6 +117,230 @@ function registerIpcHandlers(deps) {
         return enqueueOrMergeCommandTask(text);
     });
 
+    function normalizeVoiceAudioFrame(payload) {
+        if (!payload) return null;
+        const frame = payload?.frame ?? payload;
+        if (!frame) return null;
+        if (Buffer.isBuffer(frame)) return frame;
+        if (frame instanceof Uint8Array) {
+            return Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength);
+        }
+        if (frame instanceof ArrayBuffer) {
+            return Buffer.from(frame);
+        }
+        if (Array.isArray(frame)) {
+            return Buffer.from(frame);
+        }
+        if (frame?.buffer instanceof ArrayBuffer) {
+            const offset = Number(frame.byteOffset || 0);
+            const length = Number(frame.byteLength || frame.length || 0);
+            return Buffer.from(frame.buffer, offset, length);
+        }
+        return null;
+    }
+
+    ipcMain.handle('voice-asr-start', async (event, payload = {}) => {
+        if (!realtimeAsrService) {
+            return {
+                ok: false,
+                message: 'RealtimeAsrService 未初始化'
+            };
+        }
+
+        try {
+            const sender = event.sender;
+            const result = await realtimeAsrService.startSession({
+                ...payload,
+                onEvent: (asrEvent = {}) => {
+                    if (!sender || sender.isDestroyed()) return;
+                    sender.send('voice-asr-event', asrEvent);
+                }
+            });
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.on('voice-asr-audio-frame', (_event, payload = {}) => {
+        if (!realtimeAsrService) return;
+        const frame = normalizeVoiceAudioFrame(payload);
+        if (!frame || frame.length === 0) return;
+        realtimeAsrService.sendAudioFrame(frame);
+    });
+
+    ipcMain.handle('voice-asr-stop', async () => {
+        if (!realtimeAsrService) {
+            return {
+                ok: false,
+                message: 'RealtimeAsrService 未初始化'
+            };
+        }
+        try {
+            const result = await realtimeAsrService.stopSession();
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('voice-asr-abort', async () => {
+        if (!realtimeAsrService) {
+            return {
+                ok: false,
+                message: 'RealtimeAsrService 未初始化'
+            };
+        }
+        try {
+            const result = await realtimeAsrService.abortSession();
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('panel-get-extensions-snapshot', async () => {
+        try {
+            return {
+                ok: true,
+                ...llmService.getExtensionsSnapshot()
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error),
+                skills: [],
+                tools: [],
+                mcp: { status: 'placeholder' }
+            };
+        }
+    });
+
+    ipcMain.handle('panel-set-skill-enabled', async (_event, payload = {}) => {
+        try {
+            const name = String(payload?.name || '').trim();
+            const enabled = Boolean(payload?.enabled);
+            const result = llmService.setSkillEnabled(name, enabled);
+            if (!result?.ok) {
+                return {
+                    ok: false,
+                    message: result?.message || '更新 skill 状态失败'
+                };
+            }
+            return {
+                ok: true,
+                skill: result.skill
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('panel-get-task-graph', async () => {
+        try {
+            const snapshot = llmService.getTaskGraphSnapshot();
+            return {
+                ok: true,
+                tasks: Array.isArray(snapshot?.tasks) ? snapshot.tasks : [],
+                generatedAt: Number(snapshot?.generatedAt || Date.now()),
+                hasCycle: Boolean(snapshot?.hasCycle)
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error),
+                tasks: [],
+                generatedAt: Date.now(),
+                hasCycle: false
+            };
+        }
+    });
+
+    ipcMain.handle('panel-get-memory-graph', async (_event, payload = {}) => {
+        try {
+            const result = llmService.getMemoryGraph(payload || {});
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error),
+                mode: 'full',
+                query: '',
+                nodes: [],
+                edges: [],
+                communities: [],
+                episodicTraces: [],
+                stats: { messages: 0, nodes: 0, edges: 0, communities: 0, generatedAt: Date.now() },
+                generatedAt: Date.now()
+            };
+        }
+    });
+
+    ipcMain.handle('panel-get-memory-recall-preview', async (_event, payload = {}) => {
+        try {
+            const result = llmService.getMemoryRecallPreview(payload || {});
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error),
+                query: String(payload?.query || ''),
+                nodes: [],
+                edges: [],
+                episodicTraces: [],
+                communities: [],
+                stats: { messages: 0, nodes: 0, edges: 0, communities: 0, generatedAt: Date.now() },
+                generatedAt: Date.now()
+            };
+        }
+    });
+
+    ipcMain.handle('panel-get-memory-node-detail', async (_event, payload = {}) => {
+        try {
+            const result = llmService.getMemoryNodeDetail(payload || {});
+            return {
+                ...result,
+                ok: result?.ok !== false
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                message: error?.message || String(error),
+                node: null,
+                edges: [],
+                traces: [],
+                generatedAt: Date.now()
+            };
+        }
+    });
+
     ipcMain.handle('get-live2d-config', async () => {
         try {
             const capabilities = live2dModelService.getCapabilities();
@@ -192,19 +417,20 @@ function registerIpcHandlers(deps) {
         }
     });
 
-    // LLM IPC Handlers (Direct interactions)
+    // LLM IPC Handlers (Legacy compatibility)
     ipcMain.handle('llm-text', async (_event, prompt) => {
-        return await llmService.chatWithText(prompt, (chunk) => {
-            const panelWindow = getPanelWindow();
-            if (panelWindow && !panelWindow.isDestroyed()) {
-                panelWindow.webContents.send('llm-chunk', chunk);
-                return;
-            }
+        const result = await llmService.chatWithCompanion(String(prompt || ''), { inputType: 'command' });
+        const text = String(result?.text || '');
+        const panelWindow = getPanelWindow();
+        if (panelWindow && !panelWindow.isDestroyed()) {
+            panelWindow.webContents.send('llm-chunk', { type: 'content', content: text });
+        } else {
             const overlayWindow = getOverlayWindow();
             if (overlayWindow && !overlayWindow.isDestroyed()) {
-                overlayWindow.webContents.send('llm-chunk', chunk);
+                overlayWindow.webContents.send('llm-chunk', { type: 'content', content: text });
             }
-        });
+        }
+        return text;
     });
 
     ipcMain.handle('llm-image', async (_event, imageUrl, prompt) => {

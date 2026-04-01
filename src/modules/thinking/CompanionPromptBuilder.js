@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 
 const LIVE2D_CONSTRAINTS_PLACEHOLDER = '{{LIVE2D_CONSTRAINTS}}';
+const SKILL_DESCRIPTION_PLACEHOLDER = '{{skillDescription}}';
+const TOOL_DESCRIPTION_PLACEHOLDER = '{{toolDescription}}';
 
 function readPromptFile(baseDir, fileName) {
     const filePath = path.join(baseDir, fileName);
@@ -45,6 +47,8 @@ function buildCompanionSystemPrompt(baseDir) {
 
 module.exports = {
     buildCompanionSystemPrompt,
-    LIVE2D_CONSTRAINTS_PLACEHOLDER
+    LIVE2D_CONSTRAINTS_PLACEHOLDER,
+    SKILL_DESCRIPTION_PLACEHOLDER,
+    TOOL_DESCRIPTION_PLACEHOLDER
 };
 

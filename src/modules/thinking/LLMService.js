@@ -2,69 +2,29 @@
 const OpenAI = require('openai');
 const path = require('path');
 const config = require('../../config/runtimeConfig');
-const { buildCompanionSystemPrompt, LIVE2D_CONSTRAINTS_PLACEHOLDER } = require('./CompanionPromptBuilder');
-const { extractFirstJsonObject } = require('./JsonUtils');
+const {
+    buildCompanionSystemPrompt,
+    LIVE2D_CONSTRAINTS_PLACEHOLDER,
+    SKILL_DESCRIPTION_PLACEHOLDER,
+    TOOL_DESCRIPTION_PLACEHOLDER
+} = require('./CompanionPromptBuilder');
 const CompanionContextMemory = require('./CompanionContextMemory');
 const live2dModelService = require('../output/Live2DModelService');
 const companionToolRegistry = require('../tools/CompanionToolRegistry');
-
-function summarizeDebugString(value, maxLength = 240) {
-    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!normalized) return '';
-    return normalized.length > maxLength
-        ? `${normalized.slice(0, maxLength - 1)}…`
-        : normalized;
-}
-
-function sanitizeDebugValue(value) {
-    if (typeof value === 'string') {
-        if (value.startsWith('data:image/')) {
-            return `[image data omitted, length=${value.length}]`;
-        }
-        return summarizeDebugString(value);
-    }
-
-    if (Array.isArray(value)) {
-        return value.map((item) => sanitizeDebugValue(item));
-    }
-
-    if (value && typeof value === 'object') {
-        const sanitized = {};
-        Object.entries(value).forEach(([key, nestedValue]) => {
-            if (key === 'base64Image' && typeof nestedValue === 'string') {
-                sanitized[key] = `[base64 image omitted, length=${nestedValue.length}]`;
-                return;
-            }
-            if (key === 'image_url' && nestedValue && typeof nestedValue === 'object') {
-                sanitized[key] = {
-                    ...nestedValue,
-                    url: sanitizeDebugValue(nestedValue.url)
-                };
-                return;
-            }
-            sanitized[key] = sanitizeDebugValue(nestedValue);
-        });
-        return sanitized;
-    }
-
-    return value;
-}
-
-function logMessages(enabled, tag, messages) {
-    if (!enabled) return;
-    try {
-        console.log(`[LLM DEBUG] ${tag} | message_count=${messages.length}`);
-        messages.forEach((msg, idx) => {
-            const role = msg?.role || 'unknown';
-            const content = typeof msg?.content === 'string'
-                ? summarizeDebugString(msg.content)
-                : JSON.stringify(sanitizeDebugValue(msg?.content || ''));
-            console.log(`[LLM DEBUG] ${tag} | #${idx + 1} role=${role} content=${content}`);
-        });
-    } catch (error) {
-        console.warn('[LLM DEBUG] Failed to log messages:', error.message);
-    }
-}
+const { logMessages } = require('./llm/LLMDebugLogger');
+const CompanionToolLoop = require('./llm/CompanionToolLoop');
+const CompactionStrategyRegistry = require('./compact/CompactionStrategyRegistry');
+const SummaryCompactStrategy = require('./compact/SummaryCompactStrategy');
+const HandoffCompactStrategy = require('./compact/HandoffCompactStrategy');
+const AutoCompactionOrchestrator = require('./compact/AutoCompactionOrchestrator');
+const { estimateTokenCount } = require('./compact/compactionUtils');
+const { createMemoryPipelineOrchestrator, graphMemoryService } = require('../memory/MemoryServices');
+const {
+    parseCompanionPayload,
+    resolveCompanionResult,
+    buildCompanionErrorFallback
+} = require('./llm/CompanionResponseResolver');
+const skillService = require('../skill/SkillService');
 
 class LLMService {
     constructor() {
@@ -78,6 +38,55 @@ class LLMService {
         this.memory = new CompanionContextMemory();
         this.cachedCompanionSystemPrompt = null;
         this.activeRunContext = null;
+        this.generation = 1;
+        this.pendingHandoffPath = '';
+        this.pendingContinuationGoal = '';
+        this.lastCompactionArtifact = null;
+        this.memoryPipeline = createMemoryPipelineOrchestrator({
+            config,
+            client: this.client,
+            companionToolRegistry,
+            estimateTokenCount,
+            memoryContextLimits: {
+                longTerm: 3200,
+                daily: 3200,
+                retrieved: 2600
+            },
+            memoryToolNames: ['memory_search', 'memory_get', 'memory_append_log', 'memory_store']
+        });
+        this.compactionRegistry = new CompactionStrategyRegistry();
+        this.compactionRegistry.register(new SummaryCompactStrategy({
+            client: this.client,
+            config,
+            workspaceDir: this.companionPromptDir,
+            getCompanionSystemPrompt: () => this.getCompanionSystemPrompt(),
+            getToolDefinitions: () => companionToolRegistry.getToolDefinitions()
+        }));
+        this.compactionRegistry.register(new HandoffCompactStrategy({
+            client: this.client,
+            config,
+            workspaceDir: this.companionPromptDir,
+            getCompanionSystemPrompt: () => this.getCompanionSystemPrompt(),
+            getToolDefinitions: () => companionToolRegistry.getToolDefinitions()
+        }));
+        this.compactionOrchestrator = new AutoCompactionOrchestrator({
+            config,
+            strategyRegistry: this.compactionRegistry,
+            getGeneration: () => this.generation,
+            onCompactionBoundary: (artifact) => this.onCompactionBoundary(artifact),
+            onSwitchGeneration: (artifact, messages) => this.switchGeneration(artifact, messages)
+        });
+        this.companionToolLoop = new CompanionToolLoop({
+            companionToolRegistry,
+            completeCompanionWithTools: (messages) => this.completeCompanionWithTools(messages),
+            onManualCompaction: ({ messages, focus }) => this.runManualCompact(messages, focus)
+        });
+        this.memoryPipeline.memoryStoreService.ensureLayout();
+        try {
+            graphMemoryService.ingestAndMaintain({ reason: 'startup' });
+        } catch (error) {
+            console.warn(`[GraphMemory] startup ingest failed: ${error?.message || error}`);
+        }
     }
 
     getCompanionSystemPrompt() {
@@ -104,10 +113,142 @@ class LLMService {
             promptWithContext = `${promptWithContext}\n${live2dConstraints}`;
         }
 
-        promptWithContext = `${promptWithContext}\n你运行在一个常驻 agent runtime 中。你的高阶能力主要是 detect、look、speak、sleep、todo，以及少量辅助工具。detect 会读取最近状态或按需截图分析；look 会立刻截图确认最新状态；speak 会完成文字播报、TTS 与 Live2D 动作表达；sleep 用于安排下一次自主苏醒时间。建议将 sleep 控制在 5 到 60 秒之间，并根据用户是否忙碌、是否刚被打扰过来保守选择；todo 用于维护多步骤计划。没有用户命令时，你也可以主动 detect 并决定是否 speak。若本轮未调用 speak，再输出 JSON 作为兼容回退。每轮结束前都应决定是否 sleep；若没有特别理由，保持沉默并 sleep。`;
+        const skillDescriptions = this.buildSkillDescriptionsText();
+        const toolDescriptions = this.buildToolDescriptionsText();
+        promptWithContext = this.injectPromptPlaceholder(
+            promptWithContext,
+            SKILL_DESCRIPTION_PLACEHOLDER,
+            skillDescriptions,
+            'Skills available (load on demand):'
+        );
+        promptWithContext = this.injectPromptPlaceholder(
+            promptWithContext,
+            TOOL_DESCRIPTION_PLACEHOLDER,
+            toolDescriptions,
+            'Tools available:'
+        );
 
         this.cachedCompanionSystemPrompt = promptWithContext;
         return this.cachedCompanionSystemPrompt;
+    }
+
+    injectPromptPlaceholder(promptWithContext, placeholder, content, fallbackHeader) {
+        const base = String(promptWithContext || '');
+        const needle = String(placeholder || '').trim();
+        const body = String(content || '').trim() || '(none)';
+        if (!needle) return base;
+        if (base.includes(needle)) {
+            return base.split(needle).join(body);
+        }
+        const header = String(fallbackHeader || '').trim();
+        if (!header) {
+            return `${base}\n${body}`;
+        }
+        return `${base}\n\n${header}\n${body}`;
+    }
+
+    buildSkillDescriptionsText() {
+        if (skillService.getSkillDescriptions) {
+            return skillService.getSkillDescriptions();
+        }
+        return '(no skills available)';
+    }
+
+    buildToolDescriptionsText() {
+        const tools = companionToolRegistry.getToolsSnapshot
+            ? companionToolRegistry.getToolsSnapshot()
+            : [];
+        if (!Array.isArray(tools) || tools.length === 0) {
+            return '(no tools available)';
+        }
+        return tools
+            .map((item = {}) => {
+                const name = String(item.name || '').trim() || '(unknown tool)';
+                const descriptionRaw = String(item.description || '').trim() || 'No description';
+                const description = descriptionRaw.length > 180
+                    ? `${descriptionRaw.slice(0, 179)}…`
+                    : descriptionRaw;
+                const scope = item.subagentEnabled === false ? ' [parent-only]' : '';
+                return `- ${name}: ${description}${scope}`;
+            })
+            .join('\n');
+    }
+
+    buildAssistantToolMessage(message = {}) {
+        return {
+            role: 'assistant',
+            content: typeof message?.content === 'string' ? message.content : '',
+            ...(Array.isArray(message?.tool_calls) && message.tool_calls.length
+                ? {
+                    tool_calls: message.tool_calls.map((toolCall) => ({
+                        id: toolCall.id,
+                        type: toolCall.type,
+                        function: {
+                            name: toolCall.function?.name,
+                            arguments: toolCall.function?.arguments || '{}'
+                        }
+                    }))
+                }
+                : {})
+        };
+    }
+
+    getToolCallConcurrency() {
+        const configured = Number(config.llm?.toolCallConcurrency || 1);
+        if (!Number.isFinite(configured)) return 1;
+        return Math.max(1, Math.floor(configured));
+    }
+
+    async executeToolCallsWithConcurrency(toolCalls = [], executeFn) {
+        const calls = Array.isArray(toolCalls) ? toolCalls : [];
+        if (calls.length === 0) return [];
+        const runner = typeof executeFn === 'function'
+            ? executeFn
+            : async () => ({ ok: false, error: 'invalid executor' });
+        const limit = Math.min(this.getToolCallConcurrency(), calls.length);
+        const results = new Array(calls.length);
+        let cursor = 0;
+
+        const worker = async () => {
+            while (true) {
+                const index = cursor;
+                cursor += 1;
+                if (index >= calls.length) return;
+                const toolCall = calls[index];
+                results[index] = await runner(toolCall, index);
+            }
+        };
+
+        await Promise.all(Array.from({ length: limit }, () => worker()));
+        return results;
+    }
+
+    drainBackgroundNotificationsIntoMessages(messages = []) {
+        if (!Array.isArray(messages)) return;
+        const adapters = companionToolRegistry.getRuntimeAdapters
+            ? companionToolRegistry.getRuntimeAdapters()
+            : {};
+        if (typeof adapters?.drainBackgroundNotifications !== 'function') {
+            return;
+        }
+        const notifications = adapters.drainBackgroundNotifications();
+        if (!Array.isArray(notifications) || notifications.length === 0) {
+            return;
+        }
+        const lines = notifications.map((item = {}) => {
+            const taskId = String(item.taskId || '').trim();
+            const status = String(item.status || 'completed').trim();
+            const headline = String(item.headline || '').trim() || '(no summary)';
+            return `[bg:${taskId || 'unknown'}] ${status}: ${headline}`;
+        });
+        messages.push({
+            role: 'user',
+            content: `<background-results>\n${lines.join('\n')}\n</background-results>`
+        });
+        messages.push({
+            role: 'assistant',
+            content: 'Noted background results.'
+        });
     }
 
     refreshCompanionPromptContext() {
@@ -117,6 +258,69 @@ class LLMService {
         if (systemMessage) {
             systemMessage.content = nextPrompt;
         }
+    }
+
+    onCompactionBoundary(artifact = {}) {
+        this.lastCompactionArtifact = artifact;
+        this.memoryPipeline.onCompactionBoundary();
+        const adapters = companionToolRegistry.getRuntimeAdapters
+            ? companionToolRegistry.getRuntimeAdapters()
+            : {};
+        if (typeof adapters?.onCompactionBoundary === 'function') {
+            adapters.onCompactionBoundary({
+                ...artifact,
+                generation: this.generation,
+                createdAt: Date.now()
+            });
+        }
+    }
+
+    switchGeneration(artifact = {}, messages = this.companionSessionMessages) {
+        if (!Array.isArray(messages)) return;
+        this.generation += 1;
+        this.memory = new CompanionContextMemory();
+        this.memoryPipeline.onCompactionBoundary();
+        this.pendingHandoffPath = String(artifact.handoffPath || '').trim();
+        this.pendingContinuationGoal = String(this.activeRunContext?.inputText || '').trim();
+
+        const boundaryMessage = [
+            `<compact_boundary id="${String(artifact.compactId || '')}" mode="handoff" generation="${this.generation}">`,
+            `transcript=${String(artifact.transcriptPath || '')}`,
+            `handoff=${this.pendingHandoffPath || '(none)'}`,
+            this.pendingContinuationGoal ? `goal=${this.pendingContinuationGoal}` : '',
+            '</compact_boundary>'
+        ].filter(Boolean).join('\n');
+
+        messages.splice(
+            0,
+            messages.length,
+            {
+                role: 'system',
+                content: this.getCompanionSystemPrompt()
+            },
+            {
+                role: 'user',
+                content: boundaryMessage
+            },
+            {
+                role: 'assistant',
+                content: 'Understood. I will continue from the handoff file.'
+            }
+        );
+    }
+
+    async runManualCompact(messages = this.companionSessionMessages, focus = '') {
+        const artifact = await this.compactionOrchestrator.runManualCompact({
+            messages,
+            focus
+        });
+        return {
+            requested: true,
+            mode: 'summary',
+            compactId: artifact.compactId,
+            transcriptPath: artifact.transcriptPath || '',
+            summaryChars: String(artifact.summaryText || '').length
+        };
     }
 
     async streamTextCompletion(messages, onChunk = null) {
@@ -149,6 +353,12 @@ class LLMService {
     }
 
     async completeCompanionWithTools(messages) {
+        this.drainBackgroundNotificationsIntoMessages(messages);
+        await this.memoryPipeline.maybeRunMemoryFlush(messages);
+        await this.compactionOrchestrator.maybeCompactBeforeCall({
+            messages,
+            reason: 'threshold'
+        });
         logMessages(config.llm.debugMessages, 'completeCompanionWithTools', messages);
         const completion = await this.client.chat.completions.create({
             model: config.llm.textModel,
@@ -162,103 +372,108 @@ class LLMService {
         return completion.choices?.[0]?.message || { role: 'assistant', content: '' };
     }
 
-    buildAssistantToolMessage(message) {
-        return {
-            role: 'assistant',
-            content: typeof message?.content === 'string' ? message.content : '',
-            ...(Array.isArray(message?.tool_calls) && message.tool_calls.length
-                ? {
-                    tool_calls: message.tool_calls.map((toolCall) => ({
-                        id: toolCall.id,
-                        type: toolCall.type,
-                        function: {
-                            name: toolCall.function?.name,
-                            arguments: toolCall.function?.arguments || '{}'
-                        }
-                    }))
-                }
-                : {})
-        };
-    }
-
-    injectTodoReminder(messages) {
-        messages.push({
-            role: 'user',
-            content: '<reminder>你已经连续数轮没有更新 todo。若当前任务是多步骤执行，请先调用 todo 工具维护计划，再继续执行。</reminder>'
+    async completeSubagentWithTools(messages) {
+        logMessages(config.llm.debugMessages, 'completeSubagentWithTools', messages);
+        const completion = await this.client.chat.completions.create({
+            model: config.llm.textModel,
+            messages,
+            stream: false,
+            tools: companionToolRegistry.getToolDefinitions({ scope: 'subagent' }),
+            tool_choice: 'auto',
+            extra_body: { enable_thinking: true }
         });
-    }
-
-    buildActionState() {
-        return {
-            spoke: false,
-            spokenText: '',
-            motion: '',
-            expression: '',
-            panelNote: '',
-            observedState: '',
-            usedOutputTool: false,
-            sleepSeconds: null
-        };
-    }
-
-    applyToolSideEffects(actionState, toolCall, toolResult) {
-        if (!toolResult?.ok) return;
-        const toolName = toolCall.function?.name;
-        const result = toolResult.result || {};
-
-        if (toolName === 'speak') {
-            actionState.spoke = true;
-            actionState.usedOutputTool = true;
-            actionState.spokenText = String(result.text || actionState.spokenText || '').trim();
-            actionState.motion = String(result.motion || actionState.motion || '').trim();
-            actionState.expression = String(result.expression || actionState.expression || '').trim();
-        } else if (toolName === 'update_panel_note') {
-            actionState.panelNote = String(result.text || '').trim();
-        } else if (toolName === 'detect') {
-            actionState.observedState = String(result.summary || result.detail || '').trim();
-        } else if (toolName === 'sleep') {
-            actionState.sleepSeconds = Number(result.sleepSeconds || 0) || null;
-        }
+        return completion.choices?.[0]?.message || { role: 'assistant', content: '' };
     }
 
     async runCompanionToolLoop(messages) {
-        const maxRounds = Math.max(1, Number(config.llm.maxToolRounds || 4));
-        let roundsSinceTodo = 0;
-        const actionState = this.buildActionState();
+        return this.companionToolLoop.run(messages);
+    }
+
+    async runSubagentTask(prompt, options = {}) {
+        const normalizedPrompt = String(prompt || '').trim();
+        if (!normalizedPrompt) {
+            throw new Error('Subagent prompt is required');
+        }
+        const maxRounds = Math.max(1, Number(config.llm.maxSubagentToolRounds || 12));
+        const maxSummaryChars = Math.max(400, Number(config.llm.subagentSummaryMaxChars || 2400));
+        const maxToolResultChars = Math.max(1200, Number(config.llm.subagentToolResultMaxChars || 12000));
+        const timelineContext = options.timelineContext && typeof options.timelineContext === 'object'
+            ? options.timelineContext
+            : {};
+        const systemPrompt = [
+            '你是一个编码子 Agent，负责完成父 Agent 分配的单个子任务。',
+            '规则：',
+            '1) 使用可用工具执行并验证结果；',
+            '2) 不要输出与任务无关内容；',
+            '3) 完成后输出简明总结（中文）；',
+            '4) task 工具在子 Agent 中不可用，不要尝试递归创建子 Agent。'
+        ].join('\n');
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: normalizedPrompt }
+        ];
+
+        let rounds = 0;
+        let toolCalls = 0;
+        let rawText = '';
+        let stoppedByRoundLimit = false;
 
         for (let round = 0; round < maxRounds; round += 1) {
-            const assistantOutput = await this.completeCompanionWithTools(messages);
+            const assistantOutput = await this.completeSubagentWithTools(messages);
             const assistantMessage = this.buildAssistantToolMessage(assistantOutput);
             messages.push(assistantMessage);
+            rounds = round + 1;
 
             if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
-                return {
-                    rawText: assistantMessage.content || '',
-                    actionState
-                };
+                rawText = String(assistantMessage.content || '').trim();
+                break;
             }
 
-            let usedTodo = false;
-            for (const toolCall of assistantMessage.tool_calls) {
-                const toolResult = await companionToolRegistry.executeToolCall(toolCall);
-                if (toolCall.function?.name === 'todo' && toolResult?.ok) {
-                    usedTodo = true;
+            const toolResults = await this.executeToolCallsWithConcurrency(
+                assistantMessage.tool_calls,
+                (toolCall) => companionToolRegistry.executeToolCall(toolCall, {
+                    scope: 'subagent',
+                    timelineContext
+                })
+            );
+
+            for (let i = 0; i < assistantMessage.tool_calls.length; i += 1) {
+                const toolCall = assistantMessage.tool_calls[i];
+                const toolResult = toolResults[i];
+                toolCalls += 1;
+                let content = JSON.stringify(toolResult, null, 2);
+                if (content.length > maxToolResultChars) {
+                    content = `${content.slice(0, maxToolResultChars)}\n...[truncated]`;
                 }
-                this.applyToolSideEffects(actionState, toolCall, toolResult);
                 messages.push({
                     role: 'tool',
                     tool_call_id: toolCall.id,
-                    content: JSON.stringify(toolResult, null, 2)
+                    content
                 });
-            }
-
-            roundsSinceTodo = usedTodo ? 0 : roundsSinceTodo + 1;
-            if (roundsSinceTodo >= 3 && companionToolRegistry.getTodoState().hasOpenItems) {
-                this.injectTodoReminder(messages);
             }
         }
 
-        throw new Error(`Companion tool loop exceeded max rounds (${maxRounds})`);
+        if (!rawText) {
+            stoppedByRoundLimit = rounds >= maxRounds;
+            const fallback = messages
+                .slice()
+                .reverse()
+                .find((item) => item?.role === 'assistant' && typeof item?.content === 'string' && item.content.trim());
+            rawText = String(fallback?.content || '').trim();
+        }
+
+        let summary = rawText || '(no summary)';
+        if (summary.length > maxSummaryChars) {
+            summary = `${summary.slice(0, maxSummaryChars)}\n...[truncated]`;
+        }
+
+        return {
+            summary,
+            rawText: rawText || summary,
+            rounds,
+            toolCalls,
+            stoppedByRoundLimit
+        };
     }
 
     async repairToJsonObject(rawText) {
@@ -284,12 +499,10 @@ class LLMService {
     async chatWithText(prompt, onChunk = null) {
         try {
             this.textSessionMessages.push({ role: 'user', content: prompt });
-            this.memory.trimSession(this.textSessionMessages);
 
             const { fullContent } = await this.streamTextCompletion(this.textSessionMessages, onChunk);
 
             this.textSessionMessages.push({ role: 'assistant', content: fullContent });
-            this.memory.trimSession(this.textSessionMessages);
 
             return fullContent;
         } catch (error) {
@@ -376,12 +589,29 @@ class LLMService {
             }
 
             const inputType = options.inputType === 'command' ? 'command' : 'perception';
-            const globalContext = this.memory.buildGlobalContext(inputText, { inputType });
+            if (this.pendingHandoffPath) {
+                this.companionSessionMessages.push({
+                    role: 'user',
+                    content: `请先调用 read_file 读取以下文件，再继续当前任务：${this.pendingHandoffPath}`
+                });
+                this.pendingHandoffPath = '';
+            }
+            if (this.pendingContinuationGoal) {
+                this.companionSessionMessages.push({
+                    role: 'user',
+                    content: `延续目标：${this.pendingContinuationGoal}`
+                });
+                this.pendingContinuationGoal = '';
+            }
+            const memorySnapshot = await this.memoryPipeline.buildMemorySnapshot(inputText, inputType);
+            const globalContext = this.memory.buildGlobalContext(inputText, {
+                inputType,
+                memorySnapshot
+            });
             this.companionSessionMessages.push({
                 role: 'user',
                 content: `${globalContext}\n请根据设定决定是否调用工具完成本轮任务；若未调用 speak，再输出 JSON 作为兼容回退。`
             });
-            this.memory.trimSession(this.companionSessionMessages, 1);
 
             this.activeRunContext = {
                 inputText,
@@ -390,84 +620,30 @@ class LLMService {
 
             const { rawText, actionState } = await this.runCompanionToolLoop(this.companionSessionMessages);
 
-            let parsed = null;
-            if (rawText) {
-                try {
-                    const jsonStr = extractFirstJsonObject(rawText);
-                    if (!jsonStr) {
-                        throw new Error('Companion response does not contain valid JSON object');
-                    }
-                    parsed = JSON.parse(jsonStr);
-                } catch (parseError) {
-                    const repaired = await this.repairToJsonObject(rawText);
-                    const repairedJsonStr = extractFirstJsonObject(repaired);
-                    if (!repairedJsonStr) {
-                        throw parseError;
-                    }
-                    parsed = JSON.parse(repairedJsonStr);
-                }
-            }
-
-            if (parsed && typeof parsed !== 'object') {
-                throw new Error('Companion response JSON is not an object');
-            }
+            const parsed = await parseCompanionPayload(rawText, (payload) => this.repairToJsonObject(payload));
 
             this.memory.updateAfterRound(actionState.observedState || inputText, { inputType });
-            if (this.memory.shouldRefreshSummary()) {
-                const summaryPrompt = this.memory.buildSummaryPrompt();
-                const completion = await this.client.chat.completions.create({
-                    model: config.llm.textModel,
-                    messages: [{ role: 'user', content: summaryPrompt }],
-                    stream: false
-                });
-                const summary = completion.choices?.[0]?.message?.content?.trim() || '';
-                this.memory.applySummary(summary);
-                this.memory.compactSessionAfterSummary(this.companionSessionMessages, 1, 6);
-                if (config.llm.debugMessages) {
-                    console.log(`[LLM DEBUG] long_term_summary_refreshed | rounds=${this.memory.companionRoundCount}`);
-                    console.log(`[LLM DEBUG] companion_session_compacted | message_count=${this.companionSessionMessages.length}`);
+            const resolved = resolveCompanionResult({ parsed, actionState, inputType, live2dModelService });
+            await this.memoryPipeline.autoPersistRoundMemory({
+                inputType,
+                inputText,
+                observedState: resolved.observedState,
+                responseText: resolved.text
+            });
+            setImmediate(() => {
+                try {
+                    graphMemoryService.ingestAndMaintain({
+                        reason: inputType === 'command' ? 'command_round' : 'perception_round'
+                    });
+                } catch (error) {
+                    console.warn(`[GraphMemory] round ingest failed: ${error?.message || error}`);
                 }
-            }
+            });
 
-            const fallbackText = actionState.spokenText || actionState.panelNote || '';
-            const defaultText = inputType === 'command'
-                ? '嗯... 我暂时有点卡住了。'
-                : '';
-            const finalText = parsed && typeof parsed.text === 'string'
-                ? parsed.text
-                : (fallbackText || defaultText);
-            const finalMotion = actionState.motion || (parsed ? live2dModelService.sanitizeMotionName(parsed.motion) : '');
-            const finalExpression = actionState.expression || (parsed ? live2dModelService.sanitizeExpressionName(parsed.expression) : '');
-
-            return {
-                text: finalText,
-                motion: finalMotion || live2dModelService.getCapabilities().fallbackMotion,
-                expression: finalExpression,
-                observedState: actionState.observedState || '',
-                handledByAgentTools: actionState.usedOutputTool,
-                spoke: actionState.spoke,
-                sleepSeconds: actionState.sleepSeconds
-            };
+            return resolved;
         } catch (error) {
             console.error('Error in chatWithCompanion:', error);
-            let fallbackMotion = 'idle';
-            let fallbackExpression = '';
-            try {
-                const capabilities = live2dModelService.getCapabilities();
-                fallbackMotion = capabilities.fallbackMotion;
-                fallbackExpression = capabilities.fallbackExpression || '';
-            } catch (capError) {
-                // ignore
-            }
-            return {
-                text: 'Hmm... something went wrong...',
-                motion: fallbackMotion,
-                expression: fallbackExpression,
-                observedState: '',
-                handledByAgentTools: false,
-                spoke: false,
-                sleepSeconds: null
-            };
+            return buildCompanionErrorFallback(live2dModelService);
         } finally {
             this.activeRunContext = null;
         }
@@ -477,12 +653,77 @@ class LLMService {
         return companionToolRegistry.getTodoState();
     }
 
+    getExtensionsSnapshot() {
+        return {
+            skills: skillService.getSkillsSnapshot
+                ? skillService.getSkillsSnapshot()
+                : [],
+            tools: companionToolRegistry.getToolsSnapshot
+                ? companionToolRegistry.getToolsSnapshot()
+                : [],
+            mcp: {
+                status: 'placeholder'
+            }
+        };
+    }
+
+    setSkillEnabled(name, enabled) {
+        const result = skillService.setSkillEnabled
+            ? skillService.setSkillEnabled(name, enabled)
+            : { ok: false, message: 'Skill toggle is not available.' };
+        if (result?.ok) {
+            this.refreshCompanionPromptContext();
+        }
+        return result;
+    }
+
+    getTaskGraphSnapshot() {
+        return companionToolRegistry.getTaskGraphSnapshot
+            ? companionToolRegistry.getTaskGraphSnapshot()
+            : { tasks: [], generatedAt: Date.now(), hasCycle: false };
+    }
+
+    getMemoryGraph(payload = {}) {
+        return graphMemoryService.getMemoryGraph(payload);
+    }
+
+    getMemoryRecallPreview(payload = {}) {
+        return graphMemoryService.getRecallPreview(payload);
+    }
+
+    getMemoryNodeDetail(payload = {}) {
+        const nodeId = typeof payload === 'string' ? payload : payload?.nodeId;
+        return graphMemoryService.getNodeDetail(nodeId);
+    }
+
+    finalizeMemoryGraph() {
+        return graphMemoryService.ingestAndMaintain({ reason: 'session_end' });
+    }
+
+    clearTaskGraph() {
+        return companionToolRegistry.clearTaskGraph
+            ? companionToolRegistry.clearTaskGraph()
+            : { removed: 0, total: 0 };
+    }
+
     onTodoStateChanged(listener) {
         return companionToolRegistry.subscribeTodoChanges(listener);
     }
 
     configureRuntimeAdapters(adapters = {}) {
         companionToolRegistry.setRuntimeAdapters(adapters);
+    }
+
+    getCompactionState() {
+        return {
+            generation: this.generation,
+            mode: String(config.llm.autoCompactMode || 'summary').trim().toLowerCase() === 'handoff'
+                ? 'handoff'
+                : 'summary',
+            lastArtifact: this.lastCompactionArtifact
+                ? { ...this.lastCompactionArtifact }
+                : null
+        };
     }
 
     getCompanionSessionMessagesSnapshot() {
